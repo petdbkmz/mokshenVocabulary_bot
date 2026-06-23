@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: moksha-bot
+    runtime: python
+    buildCommand: |
+      python backup_db.py
+      pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+    plan: free
