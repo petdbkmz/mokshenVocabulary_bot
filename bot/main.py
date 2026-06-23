@@ -31,6 +31,7 @@ async def main():
     application.add_handler(CommandHandler("add_editor", add_editor_command))
     application.add_handler(CommandHandler("remove_editor", remove_editor_command))
     application.add_handler(CommandHandler("check_support", check_support_command))
+    application.add_handler(CommandHandler("restore", restore_command))
     
     # Регистрируем обработчики сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))

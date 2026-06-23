@@ -182,6 +182,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from .admin import confirm_clear_stats
         await confirm_clear_stats(update, context)
         return
+
+    if data.startswith("confirm_restore_"):
+        from .admin import confirm_restore
+        await confirm_restore(update, context)
+        return
     
     # ===== ОТВЕТ НА ОБРАЩЕНИЕ =====
     if data.startswith("reply_to_"):

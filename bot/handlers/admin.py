@@ -1031,3 +1031,113 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при создании копии: {e}")
+
+# ============================================
+# ВОССТАНОВЛЕНИЕ БАЗЫ ДАННЫХ
+# ============================================
+
+@editor_required
+async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Восстановить базу данных из последнего бэкапа (только для админа)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет прав для этой команды.")
+        return
+    
+    # Проверяем, есть ли бэкапы
+    import os
+    backup_dir = "backups"
+    if not os.path.exists(backup_dir):
+        await update.message.reply_text("❌ Папка с бэкапами не найдена.")
+        return
+    
+    backup_files = sorted([f for f in os.listdir(backup_dir) if f.startswith("words_")])
+    if not backup_files:
+        await update.message.reply_text("❌ Нет резервных копий для восстановления.")
+        return
+    
+    latest_backup = backup_files[-1]
+    backup_path = os.path.join(backup_dir, latest_backup)
+    backup_size = os.path.getsize(backup_path) // 1024  # в килобайтах
+    
+    # Спрашиваем подтверждение
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да, восстановить", callback_data=f"confirm_restore_{latest_backup}"),
+            InlineKeyboardButton("❌ Нет, отменить", callback_data="admin_panel")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"⚠️ <b>Восстановление базы данных</b>\n\n"
+        f"Найден бэкап: <code>{latest_backup}</code>\n"
+        f"Размер: {backup_size} КБ\n"
+        f"Дата: {latest_backup.replace('words_', '').replace('.db', '')[:8]} {latest_backup.replace('words_', '').replace('.db', '')[9:15]}\n\n"
+        f"<b>ВНИМАНИЕ!</b> Текущая база данных будет ЗАМЕНЕНА!\n"
+        f"Это действие нельзя отменить!\n\n"
+        f"Убедись, что перед восстановлением сделан свежий бэкап.",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+
+async def confirm_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение восстановления базы данных"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ У вас нет прав для этой команды.")
+        return
+    
+    # Получаем имя файла из callback
+    backup_file = query.data.replace('confirm_restore_', '')
+    backup_path = f"backups/{backup_file}"
+    
+    # Проверяем, существует ли файл
+    import os
+    if not os.path.exists(backup_path):
+        await query.edit_message_text("❌ Файл бэкапа не найден.")
+        return
+    
+    await query.edit_message_text("⏳ Восстанавливаю базу данных...")
+    
+    try:
+        import shutil
+        
+        # Сначала делаем бэкап текущей базы (на всякий случай)
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_backup = f"backups/before_restore_{timestamp}.db"
+        if os.path.exists("words.db"):
+            shutil.copy2("words.db", temp_backup)
+            await query.edit_message_text(
+                f"✅ Создан временный бэкап: {temp_backup}\n\n"
+                "⏳ Восстанавливаю базу из выбранного бэкапа..."
+            )
+        
+        # Восстанавливаем
+        shutil.copy2(backup_path, "words.db")
+        
+        # Проверяем, что база восстановилась
+        import sqlite3
+        conn = sqlite3.connect("words.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM cards")
+        count = cursor.fetchone()[0]
+        conn.close()
+        
+        await query.edit_message_text(
+            f"✅ <b>База данных успешно восстановлена!</b>\n\n"
+            f"📚 Восстановлено слов: {count}\n"
+            f"📁 Файл: {backup_file}\n\n"
+            f"🔄 Перезапусти бота командой /start",
+            parse_mode='HTML'
+        )
+            
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка при восстановлении: {str(e)}")
