@@ -713,23 +713,30 @@ async def view_table_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    # Парсим callback_data правильно
+    # Парсим callback_data
     data = query.data
     # Формат: view_table_{table_name}_{page}
-    # Но table_name может содержать подчёркивания (например, user_progress)
+    # Нужно правильно извлечь имя таблицы (может содержать подчёркивания)
     parts = data.split('_')
+    
     # Первые 2 части - "view" и "table"
     # Последняя часть - номер страницы
     # Всё между - имя таблицы
     if len(parts) >= 4:
         page = int(parts[-1])
+        # Собираем имя таблицы из частей со 2-й по предпоследнюю
         table_name = '_'.join(parts[2:-1])
     else:
         table_name = parts[2]
         page = int(parts[3]) if len(parts) > 3 else 0
     
+    # Получаем данные таблицы
     data = await get_table_data(table_name, page=page, per_page=20)
     message = await format_table_message(data)
+    
+    if "error" in data:
+        await query.edit_message_text(f"❌ {data['error']}")
+        return
     
     total_pages = (data['total'] + data['per_page'] - 1) // data['per_page'] if data['total'] > 0 else 1
     

@@ -120,9 +120,13 @@ async def get_topics_keyboard(page: int = 0, per_page: int = 10):
 def get_dictionary_main_keyboard():
     """Главное меню словаря"""
     keyboard = [
-        [InlineKeyboardButton("Русско-мокшанский словарь", callback_data="dict_lang_ru")],
-        [InlineKeyboardButton("Мокшень-рузонь валкс", callback_data="dict_lang_mdf")],
+        [InlineKeyboardButton("📖 Русско-мокшанский словарь", callback_data="dict_lang_ru")],
+        [InlineKeyboardButton("📖 Мокшень-рузонь валкс", callback_data="dict_lang_mdf")],
         [InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")],
+        [
+            InlineKeyboardButton("📚 Мокшень валкс в Telegram", url="https://t.me/MokshaWordBot"),
+            InlineKeyboardButton("📚 Мокшень валкс в VK", url="https://vk.ru/club237187875")
+        ],
         [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)

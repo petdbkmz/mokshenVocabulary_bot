@@ -22,16 +22,9 @@ async def dictionary_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = get_dictionary_main_keyboard()
     
-    # Добавляем информацию о полном словаре
-    info_text = (
-        "\n\n<i>Полный словарь:\n"
-        "tg: @MokshaWordBot\n"
-        "vk: https://vk.ru/club237187875</i>"
-    )
-    
     await delete_previous(update)
     await query.message.reply_text(
-        f"📖 <b>Словарь</b>\n\nВыбери словарь:{info_text}",
+        "📖 <b>Словарь</b>\n\nВыбери словарь:",
         reply_markup=reply_markup,
         parse_mode='HTML'
     )
@@ -50,9 +43,6 @@ async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     reply_markup, language_name, letters_count = await get_letters_keyboard(language_from)
     
-    # Дополнительная информация для мокшанского словаря
-    moksha_info = ""
-    
     await delete_previous(update)
     
     if letters_count == 0:
@@ -64,14 +54,14 @@ async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.message.reply_text(
-            f"📭 В словаре {language_name} пока нет слов.{moksha_info}",
+            f"📭 В словаре {language_name} пока нет слов.",
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
         return
     
     await query.message.reply_text(
-        f"📖 <b>{language_name}</b>\n\nВыбери первую букву слова:{moksha_info}",
+        f"📖 <b>{language_name}</b>\n\nВыбери первую букву слова:",
         reply_markup=reply_markup,
         parse_mode='HTML'
     )
