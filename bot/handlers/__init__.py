@@ -19,7 +19,7 @@ from .admin import (
     handle_edit_field, handle_user_stats, handle_clear_stats,
     handle_notification, add_editor_command, remove_editor_command,
     tables_command, handle_admin_actions,
-    restore_command, confirm_restore
+    restore_command,
     backup_info_command, cleanup_backups_callback
 )
 from .stats import stats_command
@@ -51,7 +51,9 @@ __all__ = [
     'handle_add_word', 'handle_delete_word', 'handle_search',
     'handle_edit_field', 'handle_user_stats', 'handle_clear_stats',
     'handle_notification', 'add_editor_command', 'remove_editor_command',
-    'tables_command', 'restore_command', 'confirm_restore',
+    'tables_command', 'handle_admin_actions',
+    'restore_command',
+    'backup_info_command', 'cleanup_backups_callback',
     # stats
     'stats_command',
     # support
