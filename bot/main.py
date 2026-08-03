@@ -27,11 +27,12 @@ async def main():
     application.add_handler(CommandHandler("study", study))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("backup", backup_command))
+    application.add_handler(CommandHandler("restore", restore_command))
     application.add_handler(CommandHandler("tables", tables_command))
     application.add_handler(CommandHandler("add_editor", add_editor_command))
     application.add_handler(CommandHandler("remove_editor", remove_editor_command))
     application.add_handler(CommandHandler("check_support", check_support_command))
-    application.add_handler(CommandHandler("restore", restore_command))
+    application.add_handler(CommandHandler("backup_info", backup_info_command))
     
     # Регистрируем обработчики сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))

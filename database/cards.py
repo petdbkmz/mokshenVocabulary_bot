@@ -834,3 +834,10 @@ async def format_table_message(data: dict) -> str:
         message += "│ " + " │ ".join(str(val) for val in row_list) + " │\n"
     
     return message
+
+async def get_total_words_count() -> int:
+    """Получить общее количество слов в базе (уникальных карточек)"""
+    db = await get_db()
+    async with db.execute('SELECT COUNT(*) FROM cards') as cursor:
+        result = await cursor.fetchone()
+        return result[0] if result else 0

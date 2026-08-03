@@ -20,6 +20,7 @@ from .admin import (
     handle_notification, add_editor_command, remove_editor_command,
     tables_command, handle_admin_actions,
     restore_command, confirm_restore
+    backup_info_command, cleanup_backups_callback
 )
 from .stats import stats_command
 from .support import (

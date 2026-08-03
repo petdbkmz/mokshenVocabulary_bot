@@ -713,10 +713,17 @@ async def view_table_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    parts = query.data.split('_')
+    # Парсим callback_data правильно
+    data = query.data
+    # Формат: view_table_{table_name}_{page}
+    # Но table_name может содержать подчёркивания (например, user_progress)
+    parts = data.split('_')
+    # Первые 2 части - "view" и "table"
+    # Последняя часть - номер страницы
+    # Всё между - имя таблицы
     if len(parts) >= 4:
-        table_name = '_'.join(parts[2:-1])
         page = int(parts[-1])
+        table_name = '_'.join(parts[2:-1])
     else:
         table_name = parts[2]
         page = int(parts[3]) if len(parts) > 3 else 0
@@ -1141,3 +1148,189 @@ async def confirm_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         await query.edit_message_text(f"❌ Ошибка при восстановлении: {str(e)}")
+
+# ============================================
+# ИНФОРМАЦИЯ О БЭКАПАХ
+# ============================================
+
+@editor_required
+async def backup_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать информацию о последних 5 бэкапах и удалить старые"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет прав для этой команды.")
+        return
+    
+    import os
+    import shutil
+    from datetime import datetime, timedelta
+    
+    backup_dir = "backups"
+    
+    if not os.path.exists(backup_dir):
+        await update.message.reply_text("📭 Папка с бэкапами не найдена.")
+        return
+    
+    # Получаем список всех бэкапов
+    backup_files = []
+    for f in os.listdir(backup_dir):
+        if f.startswith("words_") and f.endswith(".db"):
+            file_path = os.path.join(backup_dir, f)
+            stat = os.stat(file_path)
+            # Парсим дату из имени файла
+            try:
+                date_str = f.replace("words_", "").replace(".db", "")
+                file_date = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+            except:
+                file_date = datetime.fromtimestamp(stat.st_mtime)
+            
+            backup_files.append({
+                'name': f,
+                'path': file_path,
+                'size': stat.st_size,
+                'size_kb': stat.st_size // 1024,
+                'size_mb': stat.st_size // (1024 * 1024),
+                'date': file_date,
+                'mtime': datetime.fromtimestamp(stat.st_mtime)
+            })
+    
+    if not backup_files:
+        await update.message.reply_text("📭 Нет резервных копий.")
+        return
+    
+    # Сортируем по дате (новые сверху)
+    backup_files.sort(key=lambda x: x['date'], reverse=True)
+    total = len(backup_files)
+    
+    # ===== УДАЛЕНИЕ СТАРЫХ БЭКАПОВ =====
+    deleted_count = 0
+    now = datetime.now()
+    seven_days_ago = now - timedelta(days=7)
+    
+    # Оставляем только последние 5
+    keep_files = backup_files[:5]  # Последние 5
+    
+    # Удаляем те, которым больше 7 дней (кроме последнего)
+    for i, bf in enumerate(backup_files):
+        should_delete = False
+        
+        # Если это не последний бэкап (индекс 0) и ему больше 7 дней
+        if i > 0 and bf['date'] < seven_days_ago:
+            should_delete = True
+        
+        # Если бэкапов больше 5 и это не в первых 5
+        if i >= 5:
+            should_delete = True
+        
+        if should_delete:
+            try:
+                os.remove(bf['path'])
+                deleted_count += 1
+            except:
+                pass
+    
+    # Обновляем список после удаления
+    if deleted_count > 0:
+        backup_files = backup_files[:5]  # Оставляем только последние 5
+    
+    # ===== ФОРМИРУЕМ СООБЩЕНИЕ =====
+    message = f"📦 <b>Информация о бэкапах</b>\n\n"
+    message += f"📊 Всего бэкапов: {total}\n"
+    message += f"🗑️ Удалено старых: {deleted_count}\n"
+    message += f"💾 Осталось: {len(backup_files)}\n\n"
+    
+    if backup_files:
+        message += "<b>Последние 5 бэкапов:</b>\n\n"
+        for i, bf in enumerate(backup_files[:5], 1):
+            size_str = f"{bf['size_kb']} КБ"
+            if bf['size_mb'] > 0:
+                size_str = f"{bf['size_mb']} МБ ({bf['size_kb']} КБ)"
+            
+            date_str = bf['date'].strftime("%d.%m.%Y %H:%M:%S")
+            message += f"{i}. <code>{bf['name']}</code>\n"
+            message += f"   📅 {date_str}\n"
+            message += f"   📦 {size_str}\n"
+            
+            # Дополнительная информация: сколько дней назад
+            days_ago = (now - bf['date']).days
+            if days_ago == 0:
+                message += f"   ⏱️ Сегодня\n"
+            elif days_ago == 1:
+                message += f"   ⏱️ Вчера\n"
+            else:
+                message += f"   ⏱️ {days_ago} дней назад\n"
+            message += "\n"
+    
+    # Добавляем кнопку для ручного удаления всех старых
+    keyboard = [
+        [InlineKeyboardButton("🗑️ Удалить все старые бэкапы (кроме последних 5)", callback_data="cleanup_backups")],
+        [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+
+async def cleanup_backups_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очистка старых бэкапов по кнопке"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ У вас нет прав для этой команды.")
+        return
+    
+    import os
+    from datetime import datetime, timedelta
+    
+    backup_dir = "backups"
+    
+    if not os.path.exists(backup_dir):
+        await query.edit_message_text("📭 Папка с бэкапами не найдена.")
+        return
+    
+    # Получаем все бэкапы
+    backup_files = []
+    for f in os.listdir(backup_dir):
+        if f.startswith("words_") and f.endswith(".db"):
+            file_path = os.path.join(backup_dir, f)
+            stat = os.stat(file_path)
+            try:
+                date_str = f.replace("words_", "").replace(".db", "")
+                file_date = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+            except:
+                file_date = datetime.fromtimestamp(stat.st_mtime)
+            
+            backup_files.append({
+                'name': f,
+                'path': file_path,
+                'date': file_date
+            })
+    
+    # Сортируем по дате (новые сверху)
+    backup_files.sort(key=lambda x: x['date'], reverse=True)
+    
+    # Удаляем все, кроме последних 5
+    deleted_count = 0
+    for i, bf in enumerate(backup_files):
+        if i >= 5:  # Оставляем только последние 5
+            try:
+                os.remove(bf['path'])
+                deleted_count += 1
+            except:
+                pass
+    
+    await query.edit_message_text(
+        f"✅ Очистка завершена!\n\n"
+        f"🗑️ Удалено старых бэкапов: {deleted_count}\n"
+        f"💾 Оставлено: {min(len(backup_files), 5)}\n\n"
+        f"📦 Последние 5 бэкапов сохранены.",
+        parse_mode='HTML'
+    )

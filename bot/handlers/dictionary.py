@@ -22,9 +22,16 @@ async def dictionary_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = get_dictionary_main_keyboard()
     
+    # Добавляем информацию о полном словаре
+    info_text = (
+        "\n\n<i>Полный словарь:\n"
+        "tg: @MokshaWordBot\n"
+        "vk: https://vk.ru/club237187875</i>"
+    )
+    
     await delete_previous(update)
     await query.message.reply_text(
-        "📖 <b>Словарь</b>\n\nВыбери словарь:",
+        f"📖 <b>Словарь</b>\n\nВыбери словарь:{info_text}",
         reply_markup=reply_markup,
         parse_mode='HTML'
     )
@@ -45,11 +52,6 @@ async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Дополнительная информация для мокшанского словаря
     moksha_info = ""
-    if language_from == 'mdf':
-        moksha_info = (
-            "\n\n<i>Полный словарь — @MokshaWordBot\n"
-            "Группа ВК (чтобы начать пользоваться, надо написать сообщение в группу): https://vk.ru/club237187875</i>"
-        )
     
     await delete_previous(update)
     

@@ -74,21 +74,27 @@ def get_study_without_hint_keyboard(card_id: int):
 
 async def get_topics_keyboard(page: int = 0, per_page: int = 10):
     """Клавиатура для выбора тематики с пагинацией"""
-    from database.cards import get_all_topics_with_counts
+    from database.cards import get_all_topics_with_counts, get_total_words_count
     
     topics_with_counts = await get_all_topics_with_counts()
     total = len(topics_with_counts)
+    
+    # Получаем общее количество слов и делим на 2 (русская и мокшанская версии)
+    total_words = await get_total_words_count()
+    total_words_display = total_words // 2  # Делим на 2 для отображения
     
     start = page * per_page
     end = start + per_page
     current_topics = topics_with_counts[start:end]
 
     keyboard = [
-        [InlineKeyboardButton("📚 Изучать все слова", callback_data="topic_Все слова")]
+        [InlineKeyboardButton(f"📚 Изучать все слова (Всего: {total_words_display})", callback_data="topic_Все слова")]
     ]
 
     for topic, count in current_topics:
-        keyboard.append([InlineKeyboardButton(f"📖 {topic} (Слов: {count})", callback_data=f"topic_{topic}")])
+        # Делим количество слов в тематике на 2
+        display_count = count // 2
+        keyboard.append([InlineKeyboardButton(f"📖 {topic} (Слов: {display_count})", callback_data=f"topic_{topic}")])
 
     # Навигация
     nav_buttons = []
