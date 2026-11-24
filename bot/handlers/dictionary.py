@@ -1,8 +1,9 @@
+from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database.cards import (
     get_card_by_id, get_words_by_letter, get_all_letters,
-    search_words_by_pattern
+    search_words_by_pattern, get_all_topics_with_counts, get_words_by_category,
 )
 from bot.keyboards import (
     get_dictionary_main_keyboard, get_letters_keyboard,
@@ -19,6 +20,8 @@ async def dictionary_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Главное меню словаря"""
     query = update.callback_query
     await query.answer()
+    
+    context.user_data.pop('dict_back_to', None)
     
     reply_markup = get_dictionary_main_keyboard()
     
@@ -38,6 +41,8 @@ async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
+    context.user_data.pop('dict_back_to', None)
+    
     language_from = query.data.replace('dict_lang_', '')
     context.user_data['dict_language'] = language_from
     
@@ -47,6 +52,7 @@ async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if letters_count == 0:
         keyboard = [
+            [InlineKeyboardButton("📂 По категориям", callback_data="dict_categories")],
             [InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")],
             [InlineKeyboardButton("⬅️ Назад к выбору словаря", callback_data="dictionary_main")],
             [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
@@ -67,6 +73,124 @@ async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 # ============================================
+# СЛОВАРЬ ПО КАТЕГОРИЯМ
+# ============================================
+
+async def dictionary_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открыть список категорий в словаре"""
+    context.user_data.pop('dict_back_to', None)
+    await _show_dictionary_categories(update, context, 0)
+
+async def dict_categories_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пагинация списка категорий"""
+    page = int(update.callback_query.data.split('_')[-1])
+    await _show_dictionary_categories(update, context, page)
+
+async def _show_dictionary_categories(update, context, page=0):
+    """Показать список категорий с пагинацией"""
+    topics_with_counts = await get_all_topics_with_counts()
+    context.user_data['dict_categories_cache'] = [t for t, _ in topics_with_counts]
+    
+    total = len(topics_with_counts)
+    per_page = 10
+    start = page * per_page
+    end = start + per_page
+    current = topics_with_counts[start:end]
+    
+    keyboard = []
+    for idx, (topic, count) in enumerate(current, start=start):
+        display_count = count // 2
+        keyboard.append([InlineKeyboardButton(
+            f"📂 {topic} (Слов: {display_count})",
+            callback_data=f"dict_cat_view_{idx}_0"
+        )])
+    
+    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"dict_cat_list_{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"dict_cat_list_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    
+    keyboard.append([InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к выбору словаря", callback_data="dictionary_main")])
+    keyboard.append([InlineKeyboardButton("🏠 В главное меню", callback_data="back_to_menu")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message = "📂 <b>Словарь по категориям</b>\n\nВыберите категорию:"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+    else:
+        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
+
+async def dict_category_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Просмотр слов в выбранной категории"""
+    parts = update.callback_query.data.split('_')
+    idx = int(parts[3])
+    page = int(parts[4]) if len(parts) > 4 else 0
+    
+    cache = context.user_data.get('dict_categories_cache', [])
+    if idx >= len(cache):
+        await update.callback_query.edit_message_text("❌ Категория не найдена.")
+        return
+    
+    topic = cache[idx]
+    await _show_category_words(update, context, topic, idx, page)
+
+async def _show_category_words(update, context, topic: str, idx: int, page: int = 0):
+    """Показать слова выбранной категории"""
+    per_page = 5
+    words, total = await get_words_by_category(topic, page, per_page)
+    
+    if not words:
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Назад к категориям", callback_data="dict_cat_list_0")],
+            [InlineKeyboardButton("🏠 В главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(
+            f"📭 В категории '{escape(topic)}' нет слов.",
+            reply_markup=reply_markup
+        )
+        return
+    
+    # Сохраняем, куда возвращаться из карточки
+    context.user_data['dict_back_to'] = f"dict_cat_view_{idx}_{page}"
+    
+    keyboard = []
+    for w in words:
+        lang_label = "мокш." if w['language_from'] == 'mdf' else "рус."
+        keyboard.append([InlineKeyboardButton(
+            f"{w['word']} ({lang_label})",
+            callback_data=f"dict_word_{w['card_id']}"
+        )])
+    
+    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"dict_cat_view_{idx}_{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"dict_cat_view_{idx}_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="dict_cat_list_0")])
+    keyboard.append([InlineKeyboardButton("🏠 В главное меню", callback_data="back_to_menu")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    start_rec = page * per_page + 1
+    end_rec = min((page + 1) * per_page, total)
+    message = f"📂 <b>{escape(topic)}</b>\n📄 {start_rec}-{end_rec} из {total}\n\n"
+    
+    await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+
+# ============================================
 # ПОКАЗ СЛОВ ПО БУКВЕ
 # ============================================
 
@@ -75,7 +199,8 @@ async def dictionary_letter(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     query = update.callback_query
     await query.answer()
     
-    # Определяем букву и страницу
+    context.user_data.pop('dict_back_to', None)
+    
     if query.data.startswith('dict_letter_page_'):
         parts = query.data.split('_')
         letter = parts[3]
@@ -122,11 +247,11 @@ async def dictionary_letter(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     )
     
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
-    start = page * per_page + 1
-    end = min((page + 1) * per_page, total)
+    start_rec = page * per_page + 1
+    end_rec = min((page + 1) * per_page, total)
     
     message = f"📖 <b>Слова на букву '{letter}'</b>\n"
-    message += f"📄 {start}-{end} из {total}\n\n"
+    message += f"📄 {start_rec}-{end_rec} из {total}\n\n"
     
     await query.message.reply_text(
         message,
@@ -152,14 +277,16 @@ async def dictionary_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     message = format_card_info(card)
-    
     lang_from = context.user_data.get('dict_language', 'ru')
     
-    keyboard = [
-        [InlineKeyboardButton("⬅️ Назад к буквам", callback_data=f"dict_lang_{lang_from}")],
-        [InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")],
-        [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
-    ]
+    keyboard = []
+    back_cb = context.user_data.get('dict_back_to')
+    if back_cb:
+        keyboard.append([InlineKeyboardButton("⬅️ Назад к списку", callback_data=back_cb)])
+    else:
+        keyboard.append([InlineKeyboardButton("⬅️ Назад к буквам", callback_data=f"dict_lang_{lang_from}")])
+    keyboard.append([InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")])
+    keyboard.append([InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await delete_previous(update)
@@ -172,7 +299,7 @@ async def dictionary_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
-        except Exception as e:
+        except Exception:
             await query.message.reply_text(
                 f"{message}\n\n⚠️ <i>Картинка не загрузилась</i>",
                 reply_markup=reply_markup,
@@ -196,6 +323,7 @@ async def dictionary_search_start(update: Update, context: ContextTypes.DEFAULT_
     
     context.user_data['dict_search_page'] = 0
     context.user_data['dict_search_query'] = None
+    context.user_data.pop('dict_back_to', None)
     
     await delete_previous(update)
     await query.message.reply_text(
@@ -239,46 +367,31 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        msg = ("🔍 <b>Слово не найдено</b>\n\n"
+               "Попробуйте изменить запрос или связаться с поддержкой, чтобы предложить новое слово.")
+        
         if update.callback_query:
             await delete_previous(update)
-            await update.callback_query.message.reply_text(
-                "🔍 <b>Слово не найдено</b>\n\n"
-                "Попробуйте изменить запрос или связаться с поддержкой, чтобы предложить новое слово.",
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            await update.callback_query.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')
         else:
-            await update.message.reply_text(
-                "🔍 <b>Слово не найдено</b>\n\n"
-                "Попробуйте изменить запрос или связаться с поддержкой, чтобы предложить новое слово.",
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')
         context.user_data.pop('awaiting_dict_search', None)
         return
     
     reply_markup = await get_search_results_keyboard(results, query_text, page, total, per_page)
     
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
-    start = page * per_page + 1
-    end = min((page + 1) * per_page, total)
+    start_rec = page * per_page + 1
+    end_rec = min((page + 1) * per_page, total)
     
     message = f"🔍 <b>Результаты поиска</b>\n"
-    message += f"📄 {start}-{end} из {total}\n\n"
+    message += f"📄 {start_rec}-{end_rec} из {total}\n\n"
     
     if update.callback_query:
         await delete_previous(update)
-        await update.callback_query.message.reply_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await update.callback_query.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
     else:
-        await update.message.reply_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
     
     context.user_data.pop('awaiting_dict_search', None)
 
@@ -304,20 +417,20 @@ async def topic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     topic = query.data.replace('topic_', '')
     context.user_data['selected_topic'] = topic
+    context.user_data.pop('express_mode', None)
+    context.user_data.pop('express_queue', None)
     
-    # Получаем количество слов в тематике
     from database.cards import get_words_count_by_topic
     count = await get_words_count_by_topic(topic)
     context.user_data['topic_words_count'] = count
     
     await query.edit_message_text(
-        f"✅ Выбрана тематика: <b>{topic}</b>\n\nНачинаю изучение...",
+        f"✅ Выбрана тематика: <b>{escape(topic)}</b>\n\nНачинаю изучение...",
         parse_mode='HTML'
     )
     
     import asyncio
     await asyncio.sleep(0.5)
     
-    # Импортируем study из текущего модуля (чтобы избежать циклического импорта)
     from .study import study
     await study(update, context)

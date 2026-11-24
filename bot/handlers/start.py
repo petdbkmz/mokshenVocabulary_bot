@@ -8,7 +8,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Регистрируем пользователя
     from database.db import get_db
     db = await get_db()
     await db.execute('''
@@ -17,11 +16,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ''', (user_id, user.username, user.first_name, user.last_name))
     await db.commit()
     
-    # Сбрасываем флаг напоминания
     await reset_reminder_flag(user_id)
     await update_activity(user_id)
     
-    # Очищаем состояние пользователя
+    # Полный сброс состояния (включая express-mode, если был активен)
     context.user_data.clear()
     
     reply_markup = await get_main_menu_keyboard(user_id)
@@ -29,7 +27,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"👋 Привет, {user.first_name}!\n\nЯ помогу тебе учить слова мокшанского языка.\nВыбери действие на кнопках ниже:"
     
     if update.callback_query:
-        await update.callback_query.delete_message()
+        try:
+            await update.callback_query.delete_message()
+        except Exception:
+            pass
         await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(text, reply_markup=reply_markup)

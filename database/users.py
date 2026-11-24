@@ -1,6 +1,6 @@
 import aiosqlite
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from .db import get_db
 from .cards import auto_backup
 

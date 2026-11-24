@@ -79,24 +79,22 @@ async def get_topics_keyboard(page: int = 0, per_page: int = 10):
     topics_with_counts = await get_all_topics_with_counts()
     total = len(topics_with_counts)
     
-    # Получаем общее количество слов и делим на 2 (русская и мокшанская версии)
     total_words = await get_total_words_count()
-    total_words_display = total_words // 2  # Делим на 2 для отображения
+    total_words_display = total_words // 2
     
     start = page * per_page
     end = start + per_page
     current_topics = topics_with_counts[start:end]
 
     keyboard = [
+        [InlineKeyboardButton("⚡ Экспресс-режим (10 случайных слов)", callback_data="express_mode")],
         [InlineKeyboardButton(f"📚 Изучать все слова (Всего: {total_words_display})", callback_data="topic_Все слова")]
     ]
 
     for topic, count in current_topics:
-        # Делим количество слов в тематике на 2
         display_count = count // 2
         keyboard.append([InlineKeyboardButton(f"📖 {topic} (Слов: {display_count})", callback_data=f"topic_{topic}")])
 
-    # Навигация
     nav_buttons = []
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
@@ -122,6 +120,7 @@ def get_dictionary_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("📖 Русско-мокшанский словарь", callback_data="dict_lang_ru")],
         [InlineKeyboardButton("📖 Мокшень-рузонь валкс", callback_data="dict_lang_mdf")],
+        [InlineKeyboardButton("📂 По категориям", callback_data="dict_categories")],
         [InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")],
         [
             InlineKeyboardButton("📚 Мокшень валкс в Telegram", url="https://t.me/MokshaWordBot"),
@@ -140,6 +139,7 @@ async def get_letters_keyboard(language_from: str):
 
     if not letters:
         keyboard = [
+            [InlineKeyboardButton("📂 По категориям", callback_data="dict_categories")],
             [InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")],
             [InlineKeyboardButton("⬅️ Назад к выбору словаря", callback_data="dictionary_main")],
             [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
@@ -156,6 +156,7 @@ async def get_letters_keyboard(language_from: str):
     if row:
         keyboard.append(row)
 
+    keyboard.append([InlineKeyboardButton("📂 По категориям", callback_data="dict_categories")])
     keyboard.append([InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")])
     keyboard.append([InlineKeyboardButton("⬅️ Назад к выбору словаря", callback_data="dictionary_main")])
     keyboard.append([InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")])
@@ -172,7 +173,6 @@ async def get_words_by_letter_keyboard(words: list, letter: str, page: int, tota
         button_text = f"{word['word']} ({lang_label})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"dict_word_{word['card_id']}")])
 
-    # Навигация
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"dict_letter_page_{letter}_{page-1}"))
@@ -183,6 +183,7 @@ async def get_words_by_letter_keyboard(words: list, letter: str, page: int, tota
     if nav_buttons:
         keyboard.append(nav_buttons)
 
+    keyboard.append([InlineKeyboardButton("📂 По категориям", callback_data="dict_categories")])
     keyboard.append([InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")])
     keyboard.append([InlineKeyboardButton("⬅️ Вернуться к буквам", callback_data=f"dict_lang_{language_from}")])
     keyboard.append([InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")])
@@ -199,7 +200,6 @@ async def get_search_results_keyboard(results: list, query: str, page: int, tota
         button_text = f"{word['word']} ({lang_label})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"dict_word_{word['card_id']}")])
 
-    # Навигация
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"dict_search_page_{query}_{page-1}"))

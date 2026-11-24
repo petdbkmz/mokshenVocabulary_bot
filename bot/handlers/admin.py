@@ -1,19 +1,19 @@
 import os
 import json
+from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database.users import (
-    is_editor, set_editor, get_all_editors, 
+    is_editor, set_editor, get_all_editors,
     get_all_users_paginated, get_user_id_by_username
 )
 from database.progress import clear_user_stats
 from database.support import get_pending_messages
 from database.cards import (
-    get_all_cards, search_cards, get_card_by_id, 
-    update_card, delete_card, add_card,
+    get_all_cards, search_cards, search_cards_paginated,
+    get_card_by_id, update_card, delete_card, add_card,
     get_table_data, format_table_message
 )
-from database.support import get_pending_messages
 from .start import start
 from database.progress import get_user_stats
 from bot.keyboards import (
@@ -24,7 +24,6 @@ from bot.keyboards import (
 )
 from bot.utils import delete_previous, parse_wrong_hints, validate_card_data
 from config import ADMIN_ID, CARD_TYPES
-from .start import start
 
 # ============================================
 # ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ
@@ -91,7 +90,7 @@ async def manage_editors(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for editor in editors:
             user_id, username, first_name, last_name = editor
             name = first_name or last_name or username or str(user_id)
-            message += f"• {name} (ID: {user_id})\n"
+            message += f"• {escape(name)} (ID: {user_id})\n"
     else:
         message += "Нет редакторов.\n"
     
@@ -110,11 +109,19 @@ async def manage_editors(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @editor_required
 async def add_editor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавить редактора"""
+    """Добавить редактора (только главный администратор)"""
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Только главный администратор может назначать редакторов.")
+        return
+    
     try:
-        user_id = int(context.args[0])
-        await set_editor(user_id, True)
-        await update.message.reply_text(f"✅ Пользователь {user_id} назначен редактором!")
+        if not context.args:
+            raise IndexError()
+        target_id = int(context.args[0])
+        await set_editor(target_id, True)
+        await update.message.reply_text(f"✅ Пользователь {target_id} назначен редактором!")
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Использование: /add_editor ID_пользователя")
 
@@ -122,6 +129,8 @@ async def add_editor_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def remove_editor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Удалить редактора"""
     try:
+        if not context.args:
+            raise IndexError()
         user_id = int(context.args[0])
         if user_id == ADMIN_ID:
             await update.message.reply_text("❌ Нельзя удалить главного администратора!")
@@ -155,19 +164,19 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE, page: i
     message = f"👥 <b>Список пользователей</b>\n"
     message += f"📊 Всего пользователей: <b>{total}</b>\n\n"
     
-    start = page * per_page + 1
+    start_idx = page * per_page + 1
     message += f"📄 <i>Новые сверху (стр. {page + 1})</i>\n\n"
     
-    for idx, user in enumerate(users, start=start):
+    for idx, user in enumerate(users, start=start_idx):
         name = user['first_name'] if user['first_name'] != 'Нет' else ''
         if user['last_name'] != 'Нет':
             name += f" {user['last_name']}"
         name = name.strip() or 'Без имени'
         username = f"@{user['username']}" if user['username'] != 'Нет' else 'Нет username'
         editor = "⭐ Редактор" if user['is_editor'] else ""
-        message += f"{idx}. {name}\n"
+        message += f"{idx}. {escape(name)}\n"
         message += f"   🆔 {user['user_id']}\n"
-        message += f"   📛 {username}\n"
+        message += f"   📛 {escape(username)}\n"
         if editor:
             message += f"   {editor}\n"
         if user['created_at']:
@@ -224,14 +233,13 @@ async def list_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, page: i
     
     message = f"📋 <b>Список слов (стр. {page + 1})</b>\n\n"
     for idx, card in enumerate(cards, start=offset + 1):
-        from config import CARD_TYPES
         card_type_display = CARD_TYPES.get(card['card_type'], card['card_type'])
-        message += f"{idx}. <b>{card['word']}</b> → {card['translation']}\n"
+        message += f"{idx}. <b>{escape(card['word'])}</b> → {escape(card['translation'])}\n"
         message += f"   Тип: {card_type_display}, ID: {card['card_id']}\n"
         if card['image_url']:
             message += f"   🖼️ Есть картинка\n"
         if card.get('topics'):
-            message += f"   📚 Тематики: {', '.join(card['topics'])}\n"
+            message += f"   📚 Тематики: {escape(', '.join(card['topics']))}\n"
     
     reply_markup = get_admin_cards_pagination_keyboard(cards, page, limit)
     
@@ -285,19 +293,15 @@ async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         topics = []
         alt_trans = []
         
-        # Парсим неправильные варианты
         if len(parts) > 6 and parts[6].strip():
             wrong_hints = parse_wrong_hints(parts[6].strip())
         
-        # Парсим тематики
         if len(parts) > 7 and parts[7].strip():
             topics = [t.strip() for t in parts[7].split(',') if t.strip()]
         
-        # Парсим альтернативные переводы
         if len(parts) > 8 and parts[8].strip():
             alt_trans = [t.strip() for t in parts[8].split(',') if t.strip()]
         
-        # Валидация
         is_valid, error = validate_card_data(word, translation, language_from, language_to, card_type)
         if not is_valid:
             await update.message.reply_text(f"❌ {error}")
@@ -309,45 +313,112 @@ async def handle_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         await update.message.reply_text(
-            f"✅ Слово <b>{word}</b> добавлено! (ID: {card_id})",
+            f"✅ Слово <b>{escape(word)}</b> добавлено! (ID: {card_id})",
             parse_mode='HTML'
         )
         
         context.user_data.pop('awaiting_add_word', None)
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {escape(str(e))}")
+
+# ============================================
+# ПОИСК СЛОВ (АДМИН) — с пагинацией и кнопками редактирования
+# ============================================
 
 @editor_required
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка поиска слов (админский)"""
+    """Обработка поиска слов (админский) — вход после ввода текста"""
     text = update.message.text.strip()
     
     if text.lower() == '/cancel':
         context.user_data.pop('awaiting_search', None)
+        context.user_data.pop('admin_search_query', None)
         await update.message.reply_text("❌ Поиск отменён.")
         return
     
-    results = await search_cards(text)
+    if not text:
+        await update.message.reply_text("❌ Пустой запрос. Введите слово для поиска.")
+        return
+    
+    context.user_data['admin_search_query'] = text
+    context.user_data.pop('awaiting_search', None)
+    await show_admin_search_results(update, context, page=0)
+
+async def show_admin_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    """Показать результаты поиска с пагинацией и кнопками редактирования"""
+    query_text = context.user_data.get('admin_search_query', '')
+    if not query_text:
+        msg = "❌ Запрос потерян. Начните поиск заново."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(msg)
+        else:
+            await update.message.reply_text(msg)
+        return
+    
+    per_page = 5
+    results, total = await search_cards_paginated(query_text, page, per_page)
     
     if not results:
-        await update.message.reply_text("🔍 Ничего не найдено.")
-    else:
-        message = f"🔍 <b>Результаты поиска ({len(results)})</b>\n\n"
-        for i, card in enumerate(results[:20], 1):
-            from config import CARD_TYPES
-            card_type_display = CARD_TYPES.get(card['card_type'], card['card_type'])
-            message += f"{i}. <b>{card['word']}</b> → {card['translation']}\n"
-            message += f"   Тип: {card_type_display}, ID: {card['card_id']}\n"
-            if card.get('topics'):
-                message += f"   📚 Тематики: {', '.join(card['topics'])}\n"
-        
-        if len(results) > 20:
-            message += f"\n... и ещё {len(results) - 20} результатов"
-        
-        await update.message.reply_text(message, parse_mode='HTML')
+        msg = f"🔍 По запросу «<b>{escape(query_text)}</b>» ничего не найдено."
+        keyboard = [
+            [InlineKeyboardButton("🔍 Новый поиск", callback_data="admin_search")],
+            [InlineKeyboardButton("⬅️ Назад в админ-панель", callback_data="admin_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if update.callback_query:
+            await update.callback_query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='HTML')
+        else:
+            await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='HTML')
+        return
     
-    context.user_data.pop('awaiting_search', None)
+    context.user_data['admin_search_page'] = page
+    
+    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+    start_rec = page * per_page + 1
+    end_rec = min((page + 1) * per_page, total)
+    
+    message = f"🔍 <b>Результаты поиска</b>\n"
+    message += f"Запрос: <code>{escape(query_text)}</code>\n"
+    message += f"📄 {start_rec}-{end_rec} из {total}\n\n"
+    message += "<i>Нажмите на слово, чтобы отредактировать:</i>"
+    
+    keyboard = []
+    for card in results:
+        ct = CARD_TYPES.get(card['card_type'], card['card_type'])
+        label = f"✏️ {card['word']} → {card['translation']} ({ct})"
+        if len(label) > 64:
+            label = label[:61] + "..."
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"edit_select_{card['card_id']}")])
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"admin_search_page_{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"admin_search_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    
+    keyboard.append([InlineKeyboardButton("🔍 Новый поиск", callback_data="admin_search")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в админ-панель", callback_data="admin_panel")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+    else:
+        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
+
+async def handle_admin_search_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пагинация поиска"""
+    page = int(update.callback_query.data.split('_')[-1])
+    await show_admin_search_results(update, context, page)
+
+async def handle_admin_search_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат к результатам поиска"""
+    page = context.user_data.get('admin_search_page', 0)
+    await show_admin_search_results(update, context, page)
 
 @editor_required
 async def handle_delete_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -372,7 +443,7 @@ async def handle_delete_word(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
             f"Вы уверены, что хотите удалить слово:\n"
-            f"<b>{card['word']}</b> → {card['translation']}\n"
+            f"<b>{escape(card['word'])}</b> → {escape(card['translation'])}\n"
             f"ID: {card_id}\n\n"
             f"Это действие нельзя отменить!",
             reply_markup=reply_markup,
@@ -405,16 +476,15 @@ async def handle_edit_actions(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['editing_card_id'] = card_id
         reply_markup = await get_edit_card_keyboard(card_id)
         
-        from config import CARD_TYPES
         card_type_display = CARD_TYPES.get(card['card_type'], card['card_type'])
         image_status = "🖼️ Есть" if card['image_url'] else "❌ Нет"
-        topics_display = ', '.join(card['topics']) if card.get('topics') else '❌ Нет'
-        alt_trans_display = ', '.join(card['alternative_translations']) if card.get('alternative_translations') else '❌ Нет'
+        topics_display = escape(', '.join(card['topics'])) if card.get('topics') else '❌ Нет'
+        alt_trans_display = escape(', '.join(card['alternative_translations'])) if card.get('alternative_translations') else '❌ Нет'
         
         await query.edit_message_text(
             f"✏️ <b>Редактирование</b>\n\n"
-            f"Слово: {card['word']}\n"
-            f"Перевод: {card['translation']}\n"
+            f"Слово: {escape(card['word'])}\n"
+            f"Перевод: {escape(card['translation'])}\n"
             f"Тип: {card_type_display}\n"
             f"Язык: {card['language_from']} → {card['language_to']}\n"
             f"Картинка: {image_status}\n"
@@ -427,9 +497,10 @@ async def handle_edit_actions(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     
     elif data.startswith("edit_field_"):
+        # ФИКС: card_id всегда последний, field — всё между edit_field_ и card_id
         parts = data.split("_")
-        field = parts[2]
-        card_id = int(parts[3])
+        card_id = int(parts[-1])
+        field = '_'.join(parts[2:-1])
         
         context.user_data['editing_field'] = field
         context.user_data['editing_card_id'] = card_id
@@ -478,14 +549,21 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if text.lower() == '/cancel':
-        context.user_data.clear()
+        for k in ('editing_card_id', 'editing_field', 'awaiting_edit'):
+            context.user_data.pop(k, None)
         await update.message.reply_text("❌ Редактирование отменено.")
         return
     
     try:
         if field == 'word':
+            if not text:
+                await update.message.reply_text("❌ Слово не может быть пустым.")
+                return
             await update_card(card_id, word=text)
         elif field == 'translation':
+            if not text:
+                await update.message.reply_text("❌ Перевод не может быть пустым.")
+                return
             await update_card(card_id, translation=text)
         elif field == 'type':
             if text not in CARD_TYPES:
@@ -507,11 +585,24 @@ async def handle_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
             alt_trans = [t.strip() for t in text.split(',') if t.strip()]
             await update_card(card_id, alternative_translations=alt_trans)
         
-        await update.message.reply_text("✅ Карточка обновлена!")
-        context.user_data.clear()
+        # Кнопка «Назад к поиску», если поиск был
+        keyboard = []
+        if context.user_data.get('admin_search_query'):
+            keyboard.append([InlineKeyboardButton("⬅️ Назад к поиску", callback_data="admin_search_back")])
+        keyboard.append([InlineKeyboardButton("⬅️ В админ-панель", callback_data="admin_panel")])
+        keyboard.append([InlineKeyboardButton("🏠 В главное меню", callback_data="back_to_menu")])
+        
+        await update.message.reply_text(
+            "✅ Карточка обновлена!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        # Чистим только состояние редактирования
+        for k in ('editing_card_id', 'editing_field', 'awaiting_edit'):
+            context.user_data.pop(k, None)
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {escape(str(e))}")
 
 async def confirm_delete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подтверждение удаления карточки"""
@@ -524,7 +615,8 @@ async def confirm_delete_card(update: Update, context: ContextTypes.DEFAULT_TYPE
     card = await get_card_by_id(card_id)
     
     if await delete_card(card_id, user_id):
-        await query.edit_message_text(f"✅ Карточка <b>{card['word']}</b> удалена!", parse_mode='HTML')
+        word = escape(card['word']) if card else '?'
+        await query.edit_message_text(f"✅ Карточка <b>{word}</b> удалена!", parse_mode='HTML')
     else:
         await query.edit_message_text("❌ Ошибка при удалении карточки")
 
@@ -549,7 +641,7 @@ async def handle_user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_user_id = await get_user_id_by_username(user_id_input)
             if not target_user_id:
                 await update.message.reply_text(
-                    f"❌ Пользователь с username '{user_id_input}' не найден.\n"
+                    f"❌ Пользователь с username '{escape(user_id_input)}' не найден.\n"
                     "Попробуй использовать ID или другой username."
                 )
                 return
@@ -572,7 +664,7 @@ async def handle_user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting_user_stats', None)
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {escape(str(e))}")
 
 @editor_required
 async def handle_clear_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -591,7 +683,7 @@ async def handle_clear_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
             target_user_id = await get_user_id_by_username(user_id_input)
             if not target_user_id:
                 await update.message.reply_text(
-                    f"❌ Пользователь с username '{user_id_input}' не найден."
+                    f"❌ Пользователь с username '{escape(user_id_input)}' не найден."
                 )
                 return
         
@@ -608,7 +700,7 @@ async def handle_clear_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
             f"Вы уверены, что хотите очистить статистику пользователя:\n"
-            f"<b>{user_name}</b> (ID: {target_user_id})\n\n"
+            f"<b>{escape(user_name)}</b> (ID: {target_user_id})\n\n"
             f"Это действие нельзя отменить!",
             reply_markup=reply_markup,
             parse_mode='HTML'
@@ -639,7 +731,7 @@ async def confirm_clear_stats(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @editor_required
 async def tables_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать список всех таблиц в базе данных"""
+    """Показать список всех таблиц в базе данных (только админ)"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
@@ -696,7 +788,7 @@ async def tables_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
     except Exception as e:
-        error_msg = f"❌ Ошибка: {e}"
+        error_msg = f"❌ Ошибка: {escape(str(e))}"
         if update.callback_query:
             await update.callback_query.edit_message_text(error_msg)
         else:
@@ -713,30 +805,21 @@ async def view_table_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("❌ У вас нет прав для выполнения этой команды.")
         return
     
-    # Парсим callback_data
-    data = query.data
-    # Формат: view_table_{table_name}_{page}
-    # Нужно правильно извлечь имя таблицы (может содержать подчёркивания)
-    parts = data.split('_')
-    
-    # Первые 2 части - "view" и "table"
-    # Последняя часть - номер страницы
-    # Всё между - имя таблицы
+    parts = query.data.split('_')
     if len(parts) >= 4:
         page = int(parts[-1])
-        # Собираем имя таблицы из частей со 2-й по предпоследнюю
         table_name = '_'.join(parts[2:-1])
     else:
         table_name = parts[2]
         page = int(parts[3]) if len(parts) > 3 else 0
     
-    # Получаем данные таблицы
     data = await get_table_data(table_name, page=page, per_page=20)
-    message = await format_table_message(data)
     
     if "error" in data:
-        await query.edit_message_text(f"❌ {data['error']}")
+        await query.edit_message_text(f"❌ {escape(data['error'])}")
         return
+    
+    message = await format_table_message(data)
     
     total_pages = (data['total'] + data['per_page'] - 1) // data['per_page'] if data['total'] > 0 else 1
     
@@ -766,37 +849,10 @@ async def view_table_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def refresh_table_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновить содержимое таблицы"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if user_id != ADMIN_ID:
-        await query.edit_message_text("❌ У вас нет прав для выполнения этой команды.")
-        return
-    
-    parts = query.data.split('_')
-    if len(parts) >= 4:
-        table_name = '_'.join(parts[2:-1])
-        page = int(parts[-1])
-    else:
-        table_name = parts[2]
-        page = int(parts[3]) if len(parts) > 3 else 0
-    
     await view_table_callback(update, context)
 
 async def show_tables_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вернуться к списку таблиц"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if user_id != ADMIN_ID:
-        await query.edit_message_text("❌ У вас нет прав для выполнения этой команды.")
-        return
-    
-    # Просто вызываем tables_command, но с callback_query
     await tables_command(update, context)
 
 # ============================================
@@ -821,8 +877,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @editor_required
 async def handle_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текста уведомления и рассылка"""
-    user_id = update.effective_user.id
-    
     if not context.user_data.get('awaiting_notification'):
         return
     
@@ -831,6 +885,10 @@ async def handle_notification(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text.lower() == '/cancel':
         context.user_data.pop('awaiting_notification', None)
         await update.message.reply_text("❌ Отправка уведомления отменена.")
+        return
+    
+    if not text:
+        await update.message.reply_text("❌ Пустой текст уведомления.")
         return
     
     from database.db import get_db
@@ -845,16 +903,12 @@ async def handle_notification(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     import asyncio
     for user_row in users:
-        user_id_to_send = user_row[0]
+        target = user_row[0]
         try:
-            await context.bot.send_message(
-                chat_id=user_id_to_send,
-                text=text,
-                parse_mode='HTML'
-            )
+            await context.bot.send_message(chat_id=target, text=text, parse_mode='HTML')
             sent += 1
             await asyncio.sleep(0.05)
-        except:
+        except Exception:
             failed += 1
     
     await update.message.reply_text(
@@ -873,8 +927,6 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     """Обработка действий в админ-панели"""
     query = update.callback_query
     data = query.data
-
-    print(f"🔘 Админ-кнопка: {data}")
 
     # === ИМПОРТ ===
     if data == "admin_import":
@@ -946,7 +998,6 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # === ОБРАЩЕНИЯ В ПОДДЕРЖКУ ===
     if data == "admin_support":
-        from database.support import get_pending_messages
         messages = await get_pending_messages()
         if not messages:
             await query.edit_message_text("📭 Нет новых обращений.")
@@ -982,7 +1033,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # === ПРОСМОТР ТАБЛИЦ БД ===
-    if data == "admin_tables":  # <-- ДОБАВЛЕНО!
+    if data == "admin_tables":
         await tables_command(update, context)
         return
 
@@ -993,7 +1044,6 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # === ВОЗВРАТ В ГЛАВНОЕ МЕНЮ ===
     if data == "back_to_menu":
-        from .start import start
         await start(update, context)
         return
 
@@ -1016,9 +1066,10 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Создаю резервную копию...")
     
     try:
+        import sys
         import subprocess
         result = subprocess.run(
-            ["python", "backup_db.py"],
+            [sys.executable, "backup_db.py"],
             capture_output=True,
             text=True,
             cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1033,18 +1084,19 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             backup_files = sorted([f for f in os.listdir(backup_dir) if f.startswith("words_")])
             if backup_files:
                 latest_backup = os.path.join(backup_dir, backup_files[-1])
-                await context.bot.send_document(
-                    chat_id=user_id,
-                    document=open(latest_backup, "rb"),
-                    caption=f"📦 Резервная копия базы данных\n\nФайл: {backup_files[-1]}"
-                )
+                with open(latest_backup, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=user_id,
+                        document=f,
+                        caption=f"📦 Резервная копия базы данных\n\nФайл: {backup_files[-1]}"
+                    )
                 await update.message.reply_text("✅ Резервная копия создана и отправлена!")
                 return
         
         await update.message.reply_text("❌ Не удалось найти созданную копию.")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при создании копии: {e}")
+        await update.message.reply_text(f"❌ Ошибка при создании копии: {escape(str(e))}")
 
 # ============================================
 # ВОССТАНОВЛЕНИЕ БАЗЫ ДАННЫХ
@@ -1059,8 +1111,6 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У вас нет прав для этой команды.")
         return
     
-    # Проверяем, есть ли бэкапы
-    import os
     backup_dir = "backups"
     if not os.path.exists(backup_dir):
         await update.message.reply_text("❌ Папка с бэкапами не найдена.")
@@ -1073,9 +1123,8 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     latest_backup = backup_files[-1]
     backup_path = os.path.join(backup_dir, latest_backup)
-    backup_size = os.path.getsize(backup_path) // 1024  # в килобайтах
+    backup_size = os.path.getsize(backup_path) // 1024
     
-    # Спрашиваем подтверждение
     keyboard = [
         [
             InlineKeyboardButton("✅ Да, восстановить", callback_data=f"confirm_restore_{latest_backup}"),
@@ -1086,9 +1135,8 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"⚠️ <b>Восстановление базы данных</b>\n\n"
-        f"Найден бэкап: <code>{latest_backup}</code>\n"
-        f"Размер: {backup_size} КБ\n"
-        f"Дата: {latest_backup.replace('words_', '').replace('.db', '')[:8]} {latest_backup.replace('words_', '').replace('.db', '')[9:15]}\n\n"
+        f"Найден бэкап: <code>{escape(latest_backup)}</code>\n"
+        f"Размер: {backup_size} КБ\n\n"
         f"<b>ВНИМАНИЕ!</b> Текущая база данных будет ЗАМЕНЕНА!\n"
         f"Это действие нельзя отменить!\n\n"
         f"Убедись, что перед восстановлением сделан свежий бэкап.",
@@ -1108,12 +1156,9 @@ async def confirm_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ У вас нет прав для этой команды.")
         return
     
-    # Получаем имя файла из callback
     backup_file = query.data.replace('confirm_restore_', '')
     backup_path = f"backups/{backup_file}"
     
-    # Проверяем, существует ли файл
-    import os
     if not os.path.exists(backup_path):
         await query.edit_message_text("❌ Файл бэкапа не найден.")
         return
@@ -1122,22 +1167,14 @@ async def confirm_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         import shutil
-        
-        # Сначала делаем бэкап текущей базы (на всякий случай)
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         temp_backup = f"backups/before_restore_{timestamp}.db"
         if os.path.exists("words.db"):
             shutil.copy2("words.db", temp_backup)
-            await query.edit_message_text(
-                f"✅ Создан временный бэкап: {temp_backup}\n\n"
-                "⏳ Восстанавливаю базу из выбранного бэкапа..."
-            )
         
-        # Восстанавливаем
         shutil.copy2(backup_path, "words.db")
         
-        # Проверяем, что база восстановилась
         import sqlite3
         conn = sqlite3.connect("words.db")
         cursor = conn.cursor()
@@ -1148,13 +1185,13 @@ async def confirm_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"✅ <b>База данных успешно восстановлена!</b>\n\n"
             f"📚 Восстановлено слов: {count}\n"
-            f"📁 Файл: {backup_file}\n\n"
+            f"📁 Файл: {escape(backup_file)}\n\n"
             f"🔄 Перезапусти бота командой /start",
             parse_mode='HTML'
         )
             
     except Exception as e:
-        await query.edit_message_text(f"❌ Ошибка при восстановлении: {str(e)}")
+        await query.edit_message_text(f"❌ Ошибка при восстановлении: {escape(str(e))}")
 
 # ============================================
 # ИНФОРМАЦИЯ О БЭКАПАХ
@@ -1162,16 +1199,14 @@ async def confirm_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @editor_required
 async def backup_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать информацию о последних 5 бэкапах и удалить старые"""
+    """Показать информацию о последних 5 бэкапах (без удаления)"""
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
         await update.message.reply_text("❌ У вас нет прав для этой команды.")
         return
     
-    import os
-    import shutil
-    from datetime import datetime, timedelta
+    from datetime import datetime
     
     backup_dir = "backups"
     
@@ -1179,17 +1214,15 @@ async def backup_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("📭 Папка с бэкапами не найдена.")
         return
     
-    # Получаем список всех бэкапов
     backup_files = []
     for f in os.listdir(backup_dir):
         if f.startswith("words_") and f.endswith(".db"):
             file_path = os.path.join(backup_dir, f)
             stat = os.stat(file_path)
-            # Парсим дату из имени файла
             try:
                 date_str = f.replace("words_", "").replace(".db", "")
                 file_date = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
-            except:
+            except Exception:
                 file_date = datetime.fromtimestamp(stat.st_mtime)
             
             backup_files.append({
@@ -1206,70 +1239,33 @@ async def backup_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("📭 Нет резервных копий.")
         return
     
-    # Сортируем по дате (новые сверху)
     backup_files.sort(key=lambda x: x['date'], reverse=True)
     total = len(backup_files)
-    
-    # ===== УДАЛЕНИЕ СТАРЫХ БЭКАПОВ =====
-    deleted_count = 0
     now = datetime.now()
-    seven_days_ago = now - timedelta(days=7)
     
-    # Оставляем только последние 5
-    keep_files = backup_files[:5]  # Последние 5
-    
-    # Удаляем те, которым больше 7 дней (кроме последнего)
-    for i, bf in enumerate(backup_files):
-        should_delete = False
-        
-        # Если это не последний бэкап (индекс 0) и ему больше 7 дней
-        if i > 0 and bf['date'] < seven_days_ago:
-            should_delete = True
-        
-        # Если бэкапов больше 5 и это не в первых 5
-        if i >= 5:
-            should_delete = True
-        
-        if should_delete:
-            try:
-                os.remove(bf['path'])
-                deleted_count += 1
-            except:
-                pass
-    
-    # Обновляем список после удаления
-    if deleted_count > 0:
-        backup_files = backup_files[:5]  # Оставляем только последние 5
-    
-    # ===== ФОРМИРУЕМ СООБЩЕНИЕ =====
     message = f"📦 <b>Информация о бэкапах</b>\n\n"
-    message += f"📊 Всего бэкапов: {total}\n"
-    message += f"🗑️ Удалено старых: {deleted_count}\n"
-    message += f"💾 Осталось: {len(backup_files)}\n\n"
+    message += f"📊 Всего бэкапов: {total}\n\n"
     
-    if backup_files:
-        message += "<b>Последние 5 бэкапов:</b>\n\n"
-        for i, bf in enumerate(backup_files[:5], 1):
-            size_str = f"{bf['size_kb']} КБ"
-            if bf['size_mb'] > 0:
-                size_str = f"{bf['size_mb']} МБ ({bf['size_kb']} КБ)"
-            
-            date_str = bf['date'].strftime("%d.%m.%Y %H:%M:%S")
-            message += f"{i}. <code>{bf['name']}</code>\n"
-            message += f"   📅 {date_str}\n"
-            message += f"   📦 {size_str}\n"
-            
-            # Дополнительная информация: сколько дней назад
-            days_ago = (now - bf['date']).days
-            if days_ago == 0:
-                message += f"   ⏱️ Сегодня\n"
-            elif days_ago == 1:
-                message += f"   ⏱️ Вчера\n"
-            else:
-                message += f"   ⏱️ {days_ago} дней назад\n"
-            message += "\n"
+    message += "<b>Последние 5 бэкапов:</b>\n\n"
+    for i, bf in enumerate(backup_files[:5], 1):
+        size_str = f"{bf['size_kb']} КБ"
+        if bf['size_mb'] > 0:
+            size_str = f"{bf['size_mb']} МБ ({bf['size_kb']} КБ)"
+        
+        date_str = bf['date'].strftime("%d.%m.%Y %H:%M:%S")
+        message += f"{i}. <code>{escape(bf['name'])}</code>\n"
+        message += f"   📅 {date_str}\n"
+        message += f"   📦 {size_str}\n"
+        
+        days_ago = (now - bf['date']).days
+        if days_ago == 0:
+            message += f"   ⏱️ Сегодня\n"
+        elif days_ago == 1:
+            message += f"   ⏱️ Вчера\n"
+        else:
+            message += f"   ⏱️ {days_ago} дней назад\n"
+        message += "\n"
     
-    # Добавляем кнопку для ручного удаления всех старых
     keyboard = [
         [InlineKeyboardButton("🗑️ Удалить все старые бэкапы (кроме последних 5)", callback_data="cleanup_backups")],
         [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
@@ -1294,8 +1290,7 @@ async def cleanup_backups_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("❌ У вас нет прав для этой команды.")
         return
     
-    import os
-    from datetime import datetime, timedelta
+    from datetime import datetime
     
     backup_dir = "backups"
     
@@ -1303,7 +1298,6 @@ async def cleanup_backups_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("📭 Папка с бэкапами не найдена.")
         return
     
-    # Получаем все бэкапы
     backup_files = []
     for f in os.listdir(backup_dir):
         if f.startswith("words_") and f.endswith(".db"):
@@ -1312,7 +1306,7 @@ async def cleanup_backups_callback(update: Update, context: ContextTypes.DEFAULT
             try:
                 date_str = f.replace("words_", "").replace(".db", "")
                 file_date = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
-            except:
+            except Exception:
                 file_date = datetime.fromtimestamp(stat.st_mtime)
             
             backup_files.append({
@@ -1321,17 +1315,15 @@ async def cleanup_backups_callback(update: Update, context: ContextTypes.DEFAULT
                 'date': file_date
             })
     
-    # Сортируем по дате (новые сверху)
     backup_files.sort(key=lambda x: x['date'], reverse=True)
     
-    # Удаляем все, кроме последних 5
     deleted_count = 0
     for i, bf in enumerate(backup_files):
-        if i >= 5:  # Оставляем только последние 5
+        if i >= 5:
             try:
                 os.remove(bf['path'])
                 deleted_count += 1
-            except:
+            except Exception:
                 pass
     
     await query.edit_message_text(

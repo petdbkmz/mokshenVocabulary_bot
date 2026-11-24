@@ -4,11 +4,15 @@
 
 # Основные обработчики
 from .start import start
-from .study import study, handle_hint, handle_skip, choice_callback, reset_topic_callback, handle_answer
+from .study import (
+    study, handle_hint, handle_skip, choice_callback, reset_topic_callback,
+    handle_answer, start_express,
+)
 from .dictionary import (
     dictionary_main, dictionary_language, dictionary_letter, 
     dictionary_word, dictionary_search_start, dictionary_search,
-    dict_search_page_callback, topic_callback
+    dict_search_page_callback, topic_callback,
+    dictionary_categories, dict_categories_page_callback, dict_category_view,
 )
 from .admin import (
     show_admin_panel, list_users, list_cards, users_page_callback,
@@ -19,8 +23,9 @@ from .admin import (
     handle_edit_field, handle_user_stats, handle_clear_stats,
     handle_notification, add_editor_command, remove_editor_command,
     tables_command, handle_admin_actions,
-    restore_command,
-    backup_info_command, cleanup_backups_callback
+    restore_command, confirm_restore,
+    backup_info_command, cleanup_backups_callback,
+    show_admin_search_results, handle_admin_search_page, handle_admin_search_back,
 )
 from .stats import stats_command
 from .support import (
@@ -32,17 +37,17 @@ from .thanks import show_thanks, edit_thanks_start
 from .button_callback import button_callback
 from .text_handler import handle_text_input, handle_document
 
-# Все функции, которые можно импортировать из bot.handlers
 __all__ = [
     # start
     'start',
     # study
     'study', 'handle_hint', 'handle_skip', 'choice_callback', 
-    'reset_topic_callback', 'handle_answer',
+    'reset_topic_callback', 'handle_answer', 'start_express',
     # dictionary
     'dictionary_main', 'dictionary_language', 'dictionary_letter', 
     'dictionary_word', 'dictionary_search_start', 'dictionary_search',
     'dict_search_page_callback', 'topic_callback',
+    'dictionary_categories', 'dict_categories_page_callback', 'dict_category_view',
     # admin
     'show_admin_panel', 'list_users', 'list_cards', 'users_page_callback',
     'show_tables_callback', 'view_table_callback', 'refresh_table_callback',
@@ -52,8 +57,9 @@ __all__ = [
     'handle_edit_field', 'handle_user_stats', 'handle_clear_stats',
     'handle_notification', 'add_editor_command', 'remove_editor_command',
     'tables_command', 'handle_admin_actions',
-    'restore_command',
+    'restore_command', 'confirm_restore',
     'backup_info_command', 'cleanup_backups_callback',
+    'show_admin_search_results', 'handle_admin_search_page', 'handle_admin_search_back',
     # stats
     'stats_command',
     # support

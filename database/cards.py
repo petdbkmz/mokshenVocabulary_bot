@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import os
 import asyncio
 from typing import List, Dict, Optional, Tuple
@@ -17,7 +18,6 @@ async def auto_backup():
 async def _run_backup_async():
     """Запуск бэкапа в отдельном потоке (не блокирует event loop)"""
     try:
-        # Используем run_in_executor для запуска в отдельном потоке
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _run_backup_sync)
     except Exception as e:
@@ -26,9 +26,8 @@ async def _run_backup_async():
 def _run_backup_sync():
     """Синхронная функция для запуска в отдельном потоке"""
     try:
-        import subprocess
         result = subprocess.run(
-            ["python", "backup_db.py"],
+            [sys.executable, "backup_db.py"],
             capture_output=True,
             text=True,
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -88,9 +87,11 @@ async def get_card_by_id(card_id: int) -> Optional[Dict]:
                       'created_by', 'created_at', 'updated_at']
             card_dict = dict(zip(columns, row))
             
-            # Преобразуем JSON-поля обратно в списки
             if card_dict['wrong_hints']:
-                card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                try:
+                    card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                except Exception:
+                    card_dict['wrong_hints'] = []
             else:
                 card_dict['wrong_hints'] = []
                 
@@ -106,6 +107,12 @@ async def get_card_by_id(card_id: int) -> Optional[Dict]:
                 
             return card_dict
         return None
+
+async def get_card_tuple_by_id(card_id: int):
+    """Получить карточку как кортеж (для совместимости с prepare_card_data)"""
+    db = await get_db()
+    async with db.execute('SELECT * FROM cards WHERE card_id = ?', (card_id,)) as cursor:
+        return await cursor.fetchone()
 
 async def update_card(
     card_id: int,
@@ -172,16 +179,12 @@ async def delete_card(card_id: int, deleted_by: int) -> bool:
         return False
     
     db = await get_db()
-    # Сохраняем в лог удалённых
     await db.execute('''
         INSERT INTO deleted_cards_log (card_id, word, translation, deleted_by)
         VALUES (?, ?, ?, ?)
     ''', (card_id, card['word'], card['translation'], deleted_by))
     
-    # Удаляем карточку
     await db.execute('DELETE FROM cards WHERE card_id = ?', (card_id,))
-    
-    # Удаляем прогресс пользователей по этой карточке
     await db.execute('DELETE FROM user_progress WHERE card_id = ?', (card_id,))
     
     await db.commit()
@@ -203,7 +206,10 @@ async def get_all_cards(limit: int = 100, offset: int = 0) -> List[Dict]:
         for row in rows:
             card_dict = dict(zip(columns, row))
             if card_dict['wrong_hints']:
-                card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                try:
+                    card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                except Exception:
+                    card_dict['wrong_hints'] = []
             else:
                 card_dict['wrong_hints'] = []
             if card_dict['topics']:
@@ -218,12 +224,13 @@ async def get_all_cards(limit: int = 100, offset: int = 0) -> List[Dict]:
         return cards
 
 async def search_cards(query_text: str) -> List[Dict]:
-    """Поиск карточек по слову или переводу (админский)"""
+    """Поиск карточек по слову или переводу (без пагинации, до 100)"""
     db = await get_db()
     async with db.execute('''
         SELECT * FROM cards 
         WHERE word LIKE ? OR translation LIKE ? 
         ORDER BY word ASC
+        LIMIT 100
     ''', (f'%{query_text}%', f'%{query_text}%')) as cursor:
         rows = await cursor.fetchall()
         columns = ['card_id', 'word', 'translation', 'language_from', 
@@ -234,7 +241,10 @@ async def search_cards(query_text: str) -> List[Dict]:
         for row in rows:
             card_dict = dict(zip(columns, row))
             if card_dict['wrong_hints']:
-                card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                try:
+                    card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                except Exception:
+                    card_dict['wrong_hints'] = []
             else:
                 card_dict['wrong_hints'] = []
             if card_dict['topics']:
@@ -248,85 +258,114 @@ async def search_cards(query_text: str) -> List[Dict]:
             cards.append(card_dict)
         return cards
 
+async def search_cards_paginated(query_text: str, page: int = 0, per_page: int = 5) -> Tuple[List[Dict], int]:
+    """Поиск карточек с пагинацией"""
+    db = await get_db()
+    offset = page * per_page
+    
+    async with db.execute('''
+        SELECT COUNT(*) FROM cards 
+        WHERE word LIKE ? OR translation LIKE ?
+    ''', (f'%{query_text}%', f'%{query_text}%')) as cursor:
+        total = (await cursor.fetchone())[0]
+    
+    async with db.execute('''
+        SELECT * FROM cards 
+        WHERE word LIKE ? OR translation LIKE ? 
+        ORDER BY word ASC
+        LIMIT ? OFFSET ?
+    ''', (f'%{query_text}%', f'%{query_text}%', per_page, offset)) as cursor:
+        rows = await cursor.fetchall()
+    
+    columns = ['card_id', 'word', 'translation', 'language_from', 
+              'language_to', 'image_url', 'card_type', 'wrong_hints',
+              'topics', 'alternative_translations', 'first_letter', 
+              'created_by', 'created_at', 'updated_at']
+    cards = []
+    for row in rows:
+        card_dict = dict(zip(columns, row))
+        if card_dict['wrong_hints']:
+            try:
+                card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+            except Exception:
+                card_dict['wrong_hints'] = []
+        else:
+            card_dict['wrong_hints'] = []
+        if card_dict['topics']:
+            card_dict['topics'] = card_dict['topics'].split(',')
+        else:
+            card_dict['topics'] = []
+        if card_dict['alternative_translations']:
+            card_dict['alternative_translations'] = card_dict['alternative_translations'].split(',')
+        else:
+            card_dict['alternative_translations'] = []
+        cards.append(card_dict)
+    return cards, total
+
 # ============================================
 # ФУНКЦИИ ДЛЯ СЛУЧАЙНЫХ КАРТОЧЕК
 # ============================================
 
 async def get_random_card(user_id: int, topic: str = None):
     """Получить случайную карточку для пользователя (без исключения)"""
+    return await get_random_card_excluding(user_id, topic, None)
+
+async def get_random_card_excluding(user_id: int, topic: str = None, exclude_card_id: int = None):
+    """
+    Получить случайную карточку, исключая указанную.
+    
+    В режиме «Все слова» (topic is None) карточки с типом OBSCENUS_TYPE
+    НЕ показываются. В конкретной тематике (включая «Обсценная лексика») —
+    показываются.
+    """
+    from config import OBSCENUS_TYPE
+    
     db = await get_db()
-    if topic is None or topic == "Все слова":
-        query = '''
-            SELECT c.* FROM cards c
-            LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
-            WHERE (up.mastered IS NULL OR up.mastered = FALSE)
-            ORDER BY RANDOM()
-            LIMIT 1
-        '''
-        params = (user_id,)
+    is_general = (topic is None or topic == "Все слова")
+    
+    conditions = ["(up.mastered IS NULL OR up.mastered = FALSE)"]
+    params = [user_id]
+    
+    if is_general:
+        conditions.append("c.card_type != ?")
+        params.append(OBSCENUS_TYPE)
     else:
-        query = '''
-            SELECT c.* FROM cards c
-            LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
-            WHERE (up.mastered IS NULL OR up.mastered = FALSE)
-            AND c.topics LIKE ?
-            ORDER BY RANDOM()
-            LIMIT 1
-        '''
-        params = (user_id, f'%{topic}%')
+        conditions.append("c.topics LIKE ?")
+        params.append(f'%{topic}%')
+    
+    if exclude_card_id:
+        conditions.append("c.card_id != ?")
+        params.append(exclude_card_id)
+    
+    query = f"""
+        SELECT c.* FROM cards c
+        LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
+        WHERE {' AND '.join(conditions)}
+        ORDER BY RANDOM()
+        LIMIT 1
+    """
     
     async with db.execute(query, params) as cursor:
         return await cursor.fetchone()
 
-async def get_random_card_excluding(user_id: int, topic: str = None, exclude_card_id: int = None):
-    """Получить случайную карточку, исключая указанную"""
+async def get_express_cards(user_id: int, count: int = 10) -> List[int]:
+    """
+    Получить card_id для экспресс-режима: случайные невыученные карточки,
+    исключая тип OBSCENUS_TYPE.
+    """
+    from config import OBSCENUS_TYPE
+    
     db = await get_db()
-    
-    if topic is None or topic == "Все слова":
-        if exclude_card_id:
-            query = '''
-                SELECT c.* FROM cards c
-                LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
-                WHERE (up.mastered IS NULL OR up.mastered = FALSE)
-                AND c.card_id != ?
-                ORDER BY RANDOM()
-                LIMIT 1
-            '''
-            params = (user_id, exclude_card_id)
-        else:
-            query = '''
-                SELECT c.* FROM cards c
-                LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
-                WHERE (up.mastered IS NULL OR up.mastered = FALSE)
-                ORDER BY RANDOM()
-                LIMIT 1
-            '''
-            params = (user_id,)
-    else:
-        if exclude_card_id:
-            query = '''
-                SELECT c.* FROM cards c
-                LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
-                WHERE (up.mastered IS NULL OR up.mastered = FALSE)
-                AND c.topics LIKE ?
-                AND c.card_id != ?
-                ORDER BY RANDOM()
-                LIMIT 1
-            '''
-            params = (user_id, f'%{topic}%', exclude_card_id)
-        else:
-            query = '''
-                SELECT c.* FROM cards c
-                LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
-                WHERE (up.mastered IS NULL OR up.mastered = FALSE)
-                AND c.topics LIKE ?
-                ORDER BY RANDOM()
-                LIMIT 1
-            '''
-            params = (user_id, f'%{topic}%')
-    
-    async with db.execute(query, params) as cursor:
-        return await cursor.fetchone()
+    async with db.execute('''
+        SELECT c.card_id FROM cards c
+        LEFT JOIN user_progress up ON c.card_id = up.card_id AND up.user_id = ?
+        WHERE (up.mastered IS NULL OR up.mastered = FALSE)
+          AND c.card_type != ?
+        ORDER BY RANDOM()
+        LIMIT ?
+    ''', (user_id, OBSCENUS_TYPE, count)) as cursor:
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
 
 # ============================================
 # ФУНКЦИИ ДЛЯ ТЕМАТИК
@@ -355,7 +394,7 @@ async def get_all_topics_paginated(page: int = 0, per_page: int = 10) -> Tuple[L
     return all_topics[start:end], total
 
 async def get_words_count_by_topic(topic: str) -> int:
-    """Получить количество слов в тематике"""
+    """Получить количество слов в тематике (точное совпадение топика)"""
     if topic == "Все слова":
         db = await get_db()
         async with db.execute('SELECT COUNT(*) FROM cards') as cursor:
@@ -365,19 +404,32 @@ async def get_words_count_by_topic(topic: str) -> int:
     db = await get_db()
     async with db.execute('''
         SELECT COUNT(*) FROM cards 
-        WHERE topics LIKE ?
-    ''', (f'%{topic}%',)) as cursor:
+        WHERE ',' || topics || ',' LIKE ?
+    ''', (f'%,{topic},%',)) as cursor:
         result = await cursor.fetchone()
         return result[0] if result else 0
 
 async def get_all_topics_with_counts() -> List[Tuple[str, int]]:
-    """Получить все тематики с количеством слов"""
+    """
+    Получить все тематики с количеством слов.
+    Специальные тематики (SPECIAL_LAST_TOPICS) всегда в конце.
+    """
+    from config import SPECIAL_LAST_TOPICS
+    
     topics = await get_all_topics()
     result = []
     for topic in topics:
         count = await get_words_count_by_topic(topic)
         result.append((topic, count))
-    return sorted(result, key=lambda x: x[0])
+    
+    def sort_key(item):
+        name = item[0]
+        if name in SPECIAL_LAST_TOPICS:
+            return (1, SPECIAL_LAST_TOPICS.index(name))
+        return (0, name)
+    
+    result.sort(key=sort_key)
+    return result
 
 async def reset_user_progress_by_topic(user_id: int, topic: str) -> int:
     """Сбросить прогресс пользователя по словам из тематики"""
@@ -388,18 +440,16 @@ async def reset_user_progress_by_topic(user_id: int, topic: str) -> int:
         return 0
     
     db = await get_db()
-    # Получаем все карточки по тематике
     async with db.execute('''
         SELECT card_id FROM cards 
-        WHERE topics LIKE ?
-    ''', (f'%{topic}%',)) as cursor:
+        WHERE ',' || topics || ',' LIKE ?
+    ''', (f'%,{topic},%',)) as cursor:
         rows = await cursor.fetchall()
         card_ids = [row[0] for row in rows]
     
     if not card_ids:
         return 0
     
-    # Удаляем прогресс по этим карточкам
     placeholders = ','.join(['?'] * len(card_ids))
     query = f'''
         DELETE FROM user_progress 
@@ -416,27 +466,64 @@ async def reset_user_progress_by_topic(user_id: int, topic: str) -> int:
 # ============================================
 
 async def get_words_by_letter(language_from: str, letter: str, page: int = 0, per_page: int = 5) -> Tuple[List[Dict], int]:
-    """Получить слова по языку и первой букве с пагинацией"""
+    """
+    Получить слова по языку и первой букве с пагинацией.
+    Карточки типа OBSCENUS_TYPE НЕ включаются (требование #3).
+    """
+    from config import OBSCENUS_TYPE
+    
     db = await get_db()
     offset = page * per_page
     
-    # Получаем общее количество
-    query_count = '''
+    async with db.execute('''
         SELECT COUNT(*) FROM cards 
         WHERE language_from = ? AND first_letter = ?
-    '''
-    async with db.execute(query_count, (language_from, letter.upper())) as cursor:
+          AND card_type != ?
+    ''', (language_from, letter.upper(), OBSCENUS_TYPE)) as cursor:
         total = (await cursor.fetchone())[0]
     
-    # Получаем слова
-    query = '''
+    async with db.execute('''
         SELECT card_id, word, translation, card_type, language_from 
         FROM cards 
         WHERE language_from = ? AND first_letter = ?
+          AND card_type != ?
         ORDER BY word ASC
         LIMIT ? OFFSET ?
-    '''
-    async with db.execute(query, (language_from, letter.upper(), per_page, offset)) as cursor:
+    ''', (language_from, letter.upper(), OBSCENUS_TYPE, per_page, offset)) as cursor:
+        rows = await cursor.fetchall()
+        cards = []
+        for row in rows:
+            cards.append({
+                'card_id': row[0],
+                'word': row[1],
+                'translation': row[2],
+                'card_type': row[3],
+                'language_from': row[4]
+            })
+        return cards, total
+
+async def get_words_by_category(category: str, page: int = 0, per_page: int = 5) -> Tuple[List[Dict], int]:
+    """
+    Получить слова по тематике (категории) с пагинацией.
+    Показывает ВСЕ карточки категории, включая OBSCENUS_TYPE
+    (пользователь явно выбрал категорию).
+    """
+    db = await get_db()
+    offset = page * per_page
+    
+    async with db.execute('''
+        SELECT COUNT(*) FROM cards 
+        WHERE ',' || topics || ',' LIKE ?
+    ''', (f'%,{category},%',)) as cursor:
+        total = (await cursor.fetchone())[0]
+    
+    async with db.execute('''
+        SELECT card_id, word, translation, card_type, language_from 
+        FROM cards 
+        WHERE ',' || topics || ',' LIKE ?
+        ORDER BY word ASC
+        LIMIT ? OFFSET ?
+    ''', (f'%,{category},%', per_page, offset)) as cursor:
         rows = await cursor.fetchall()
         cards = []
         for row in rows:
@@ -450,13 +537,16 @@ async def get_words_by_letter(language_from: str, letter: str, page: int = 0, pe
         return cards, total
 
 async def get_all_letters(language_from: str) -> List[str]:
-    """Получить все первые буквы для языка"""
+    """Получить все первые буквы для языка (без учёта OBSCENUS_TYPE)"""
+    from config import OBSCENUS_TYPE
+    
     db = await get_db()
     async with db.execute('''
         SELECT DISTINCT first_letter FROM cards 
         WHERE language_from = ? AND first_letter IS NOT NULL AND first_letter != ""
+          AND card_type != ?
         ORDER BY first_letter
-    ''', (language_from,)) as cursor:
+    ''', (language_from, OBSCENUS_TYPE)) as cursor:
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
 
@@ -465,13 +555,11 @@ async def search_words_by_pattern(pattern: str, page: int = 0, per_page: int = 5
     db = await get_db()
     offset = page * per_page
     
-    # Обработка шаблона с *
     if '*' in pattern:
         search_term = pattern.replace('*', '%')
     else:
         search_term = f'%{pattern}%'
     
-    # Базовый запрос для подсчёта
     base_query_count = '''
         SELECT COUNT(*) FROM cards 
         WHERE word LIKE ? 
@@ -480,7 +568,6 @@ async def search_words_by_pattern(pattern: str, page: int = 0, per_page: int = 5
     '''
     base_params = [search_term, search_term, f'%{search_term}%']
     
-    # Базовый запрос для получения данных
     base_query = '''
         SELECT card_id, word, translation, card_type, language_from 
         FROM cards 
@@ -492,7 +579,6 @@ async def search_words_by_pattern(pattern: str, page: int = 0, per_page: int = 5
     '''
     base_params_data = [search_term, search_term, f'%{search_term}%', per_page, offset]
     
-    # Если указан язык, добавляем условие
     if language_from:
         query_count = base_query_count + ' AND language_from = ?'
         params_count = base_params + [language_from]
@@ -505,11 +591,9 @@ async def search_words_by_pattern(pattern: str, page: int = 0, per_page: int = 5
         query = base_query
         params_data = base_params_data
     
-    # Получаем общее количество
     async with db.execute(query_count, params_count) as cursor:
         total = (await cursor.fetchone())[0]
     
-    # Получаем данные
     async with db.execute(query, params_data) as cursor:
         rows = await cursor.fetchall()
         cards = []
@@ -539,11 +623,9 @@ async def get_hints_for_card(card_id: int, correct_answer: str, card_type: str, 
         wrong_hints = await cursor.fetchall()
         wrong_hints = [h[0] for h in wrong_hints if h[0] != correct_answer]
         
-        # Если не хватает вариантов, добавляем заглушки
         while len(wrong_hints) < 3:
             wrong_hints.append(f"Вариант {len(wrong_hints) + 1}")
         
-        # Перемешиваем все варианты
         all_hints = [correct_answer] + wrong_hints[:3]
         import random
         random.shuffle(all_hints)
@@ -556,9 +638,8 @@ async def get_multiple_choice_hints(card_id: int, correct_answer: str):
     if not card:
         return [(correct_answer, True), ("Вариант 1", False), ("Вариант 2", False), ("Вариант 3", False)]
     
-    wrong_hints = card.get('wrong_hints', [])
+    wrong_hints = list(card.get('wrong_hints', []))
     
-    # Если неправильных вариантов меньше 3, добираем из базы
     while len(wrong_hints) < 3:
         db = await get_db()
         async with db.execute('''
@@ -573,7 +654,6 @@ async def get_multiple_choice_hints(card_id: int, correct_answer: str):
             else:
                 wrong_hints.append(f"Вариант {len(wrong_hints) + 1}")
     
-    # Перемешиваем все варианты
     all_hints = [correct_answer] + wrong_hints[:3]
     import random
     random.shuffle(all_hints)
@@ -605,20 +685,17 @@ async def set_thanks_text(text: str):
     await auto_backup()
 
 # ============================================
-# ИМПОРТ ИЗ EXCEL — С АВТОБЭКАПОМ
+# ИМПОРТ ИЗ EXCEL
 # ============================================
 
 def import_words_from_excel(file_path: str, user_id: int) -> tuple:
     """
-    Импорт слов из Excel файла
+    Импорт слов из Excel файла.
     Возвращает: (количество добавленных, список ошибок)
     """
     import sqlite3
     import openpyxl
-    import json
-    import subprocess
-    import os
-    from config import CARD_TYPES
+    from config import CARD_TYPES, DB_NAME
     
     errors = []
     added_count = 0
@@ -627,12 +704,11 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
         workbook = openpyxl.load_workbook(file_path)
         sheet = workbook.active
         
-        conn = sqlite3.connect("words.db")
+        conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
         for row in sheet.iter_rows(min_row=2, values_only=True):
             try:
-                # Проверяем обязательные поля
                 if not row[0] or not row[1]:
                     errors.append("Пропущена строка: пустое слово или перевод")
                     continue
@@ -648,7 +724,6 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
                 alt_trans_text = str(row[8]).strip() if row[8] else ''
                 first_letter = word[0].upper() if word else None
                 
-                # Валидация
                 if language_from not in ['ru', 'mdf']:
                     errors.append(f"Неверный язык: {language_from}. Пропускаем слово '{word}'")
                     continue
@@ -659,7 +734,6 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
                     errors.append(f"Неверный тип: {card_type}. Пропускаем слово '{word}'")
                     continue
                 
-                # Парсим неправильные варианты (в кавычках)
                 wrong_hints = []
                 if wrong_hints_text:
                     parts = []
@@ -678,17 +752,14 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
                         parts.append(''.join(current).strip())
                     wrong_hints = [p.strip('" ') for p in parts if p.strip()]
                 
-                # Парсим тематики и альтернативные переводы
                 topics = [t.strip() for t in topics_text.split(',') if t.strip()] if topics_text else []
                 alt_trans = [t.strip() for t in alt_trans_text.split(',') if t.strip()] if alt_trans_text else []
                 
-                # Проверяем, есть ли уже такое слово
                 cursor.execute('SELECT card_id FROM cards WHERE word = ? AND language_from = ?',
                              (word, language_from))
                 existing = cursor.fetchone()
                 
                 if existing:
-                    # Обновляем существующее
                     wrong_hints_json = json.dumps(wrong_hints) if wrong_hints else None
                     topics_str = ','.join(topics) if topics else None
                     alt_trans_str = ','.join(alt_trans) if alt_trans else None
@@ -706,7 +777,6 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
                     added_count += 1
                     continue
                 
-                # Добавляем новое слово
                 wrong_hints_json = json.dumps(wrong_hints) if wrong_hints else None
                 topics_str = ','.join(topics) if topics else None
                 alt_trans_str = ','.join(alt_trans) if alt_trans else None
@@ -729,17 +799,16 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
         conn.commit()
         conn.close()
         
-        # Создаём бэкап после импорта
         if added_count > 0:
             try:
                 subprocess.run(
-                    ["python", "backup_db.py"],
+                    [sys.executable, "backup_db.py"],
                     capture_output=True,
                     text=True,
                     cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 )
                 print("✅ Автоматический бэкап после импорта создан")
-            except:
+            except Exception:
                 pass
         
     except Exception as e:
@@ -754,25 +823,31 @@ def import_words_from_excel(file_path: str, user_id: int) -> tuple:
 async def get_table_data(table_name: str, page: int = 0, per_page: int = 20) -> dict:
     """Получить данные из таблицы SQLite с пагинацией"""
     import sqlite3
+    from config import DB_NAME
+    
+    ALLOWED = {
+        'users', 'cards', 'user_progress', 'deleted_cards_log',
+        'support_messages', 'bot_config', 'sqlite_sequence'
+    }
+    
+    if table_name not in ALLOWED:
+        return {"error": f"Таблица '{table_name}' не разрешена"}
+    
     try:
-        conn = sqlite3.connect("words.db")
+        conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        # Проверяем, существует ли таблица
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
         if not cursor.fetchone():
             conn.close()
             return {"error": f"Таблица '{table_name}' не найдена"}
         
-        # Получаем структуру таблицы
         cursor.execute(f"PRAGMA table_info({table_name})")
         columns = [col[1] for col in cursor.fetchall()]
         
-        # Получаем общее количество записей
         cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
         total = cursor.fetchone()[0]
         
-        # Получаем данные с пагинацией
         offset = page * per_page
         cursor.execute(f"SELECT * FROM {table_name} LIMIT ? OFFSET ?", (per_page, offset))
         rows = cursor.fetchall()
@@ -792,8 +867,10 @@ async def get_table_data(table_name: str, page: int = 0, per_page: int = 20) -> 
 
 async def format_table_message(data: dict) -> str:
     """Форматировать данные таблицы в читаемое сообщение"""
+    from html import escape
+    
     if "error" in data:
-        return f"❌ {data['error']}"
+        return f"❌ {escape(data['error'])}"
     
     table_name = data['table_name']
     columns = data['columns']
@@ -803,35 +880,31 @@ async def format_table_message(data: dict) -> str:
     page = data['page']
     
     if not rows and total == 0:
-        return f"📭 Таблица '{table_name}' пуста"
+        return f"📭 Таблица '{escape(table_name)}' пуста"
     
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
     start_record = page * per_page + 1
     end_record = min((page + 1) * per_page, total)
     
-    message = f"📊 <b>Таблица: {table_name}</b>\n"
+    message = f"📊 <b>Таблица: {escape(table_name)}</b>\n"
     message += f"📝 Всего записей: {total}\n"
     message += f"📄 Показано: {start_record}-{end_record} (страница {page+1}/{total_pages})\n\n"
     
-    # Заголовки
-    message += "│ " + " │ ".join(columns) + " │\n"
+    message += "│ " + " │ ".join(escape(c) for c in columns) + " │\n"
     message += "├" + "─" * (len(" │ ".join(columns)) + 2) + "┤\n"
     
-    # Данные
     for row in rows:
         row_list = list(row)
         for j, col in enumerate(columns):
-            # Если это JSON-поле, пытаемся распарсить
             if col in ['wrong_hints'] and row_list[j]:
                 try:
                     row_list[j] = json.loads(row_list[j])
-                except:
+                except Exception:
                     pass
-            # Обрезаем длинные строки
             if isinstance(row_list[j], str) and len(row_list[j]) > 30:
                 row_list[j] = row_list[j][:27] + "..."
         
-        message += "│ " + " │ ".join(str(val) for val in row_list) + " │\n"
+        message += "│ " + " │ ".join(escape(str(val)) for val in row_list) + " │\n"
     
     return message
 
