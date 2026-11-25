@@ -259,22 +259,30 @@ async def search_cards(query_text: str) -> List[Dict]:
         return cards
 
 async def search_cards_paginated(query_text: str, page: int = 0, per_page: int = 5) -> Tuple[List[Dict], int]:
-    """Поиск карточек с пагинацией"""
+    """
+    Поиск карточек с пагинацией (case-insensitive для кириллицы,
+    включая alternative_translations).
+    """
     db = await get_db()
     offset = page * per_page
+    pattern = f'%{query_text}%'
     
     async with db.execute('''
         SELECT COUNT(*) FROM cards 
-        WHERE word LIKE ? OR translation LIKE ?
-    ''', (f'%{query_text}%', f'%{query_text}%')) as cursor:
+        WHERE ulower(word) LIKE ulower(?) 
+           OR ulower(translation) LIKE ulower(?) 
+           OR ulower(alternative_translations) LIKE ulower(?)
+    ''', (pattern, pattern, pattern)) as cursor:
         total = (await cursor.fetchone())[0]
     
     async with db.execute('''
         SELECT * FROM cards 
-        WHERE word LIKE ? OR translation LIKE ? 
+        WHERE ulower(word) LIKE ulower(?) 
+           OR ulower(translation) LIKE ulower(?) 
+           OR ulower(alternative_translations) LIKE ulower(?)
         ORDER BY word ASC
         LIMIT ? OFFSET ?
-    ''', (f'%{query_text}%', f'%{query_text}%', per_page, offset)) as cursor:
+    ''', (pattern, pattern, pattern, per_page, offset)) as cursor:
         rows = await cursor.fetchall()
     
     columns = ['card_id', 'word', 'translation', 'language_from', 
@@ -283,23 +291,18 @@ async def search_cards_paginated(query_text: str, page: int = 0, per_page: int =
               'created_by', 'created_at', 'updated_at']
     cards = []
     for row in rows:
-        card_dict = dict(zip(columns, row))
-        if card_dict['wrong_hints']:
+        cd = dict(zip(columns, row))
+        if cd['wrong_hints']:
             try:
-                card_dict['wrong_hints'] = json.loads(card_dict['wrong_hints'])
+                cd['wrong_hints'] = json.loads(cd['wrong_hints'])
             except Exception:
-                card_dict['wrong_hints'] = []
+                cd['wrong_hints'] = []
         else:
-            card_dict['wrong_hints'] = []
-        if card_dict['topics']:
-            card_dict['topics'] = card_dict['topics'].split(',')
-        else:
-            card_dict['topics'] = []
-        if card_dict['alternative_translations']:
-            card_dict['alternative_translations'] = card_dict['alternative_translations'].split(',')
-        else:
-            card_dict['alternative_translations'] = []
-        cards.append(card_dict)
+            cd['wrong_hints'] = []
+        cd['topics'] = cd['topics'].split(',') if cd['topics'] else []
+        cd['alternative_translations'] = (cd['alternative_translations'].split(',')
+                                          if cd['alternative_translations'] else [])
+        cards.append(cd)
     return cards, total
 
 # ============================================
@@ -393,33 +396,69 @@ async def get_all_topics_paginated(page: int = 0, per_page: int = 10) -> Tuple[L
     end = start + per_page
     return all_topics[start:end], total
 
-async def get_words_count_by_topic(topic: str) -> int:
-    """Получить количество слов в тематике (точное совпадение топика)"""
-    if topic == "Все слова":
-        db = await get_db()
-        async with db.execute('SELECT COUNT(*) FROM cards') as cursor:
-            result = await cursor.fetchone()
-            return result[0] if result else 0
-    
+async def get_words_count_by_topic(topic: str, language_from: Optional[str] = None) -> int:
+    """Получить количество слов в тематике (опциональный фильтр по языку)"""
     db = await get_db()
-    async with db.execute('''
-        SELECT COUNT(*) FROM cards 
-        WHERE ',' || topics || ',' LIKE ?
-    ''', (f'%,{topic},%',)) as cursor:
-        result = await cursor.fetchone()
+    
+    if topic == "Все слова":
+        if language_from:
+            async with db.execute(
+                'SELECT COUNT(*) FROM cards WHERE language_from = ?',
+                (language_from,)
+            ) as cursor:
+                result = await cursor.fetchone()
+        else:
+            async with db.execute('SELECT COUNT(*) FROM cards') as cursor:
+                result = await cursor.fetchone()
         return result[0] if result else 0
+    
+    if language_from:
+        async with db.execute('''
+            SELECT COUNT(*) FROM cards 
+            WHERE ',' || topics || ',' LIKE ? AND language_from = ?
+        ''', (f'%,{topic},%', language_from)) as cursor:
+            result = await cursor.fetchone()
+    else:
+        async with db.execute('''
+            SELECT COUNT(*) FROM cards 
+            WHERE ',' || topics || ',' LIKE ?
+        ''', (f'%,{topic},%',)) as cursor:
+            result = await cursor.fetchone()
+    return result[0] if result else 0
 
-async def get_all_topics_with_counts() -> List[Tuple[str, int]]:
+async def get_all_topics_with_counts(language_from: Optional[str] = None) -> List[Tuple[str, int]]:
     """
     Получить все тематики с количеством слов.
-    Специальные тематики (SPECIAL_LAST_TOPICS) всегда в конце.
+    Опциональный фильтр по языку. Специальные тематики
+    (SPECIAL_LAST_TOPICS) всегда в конце.
     """
     from config import SPECIAL_LAST_TOPICS
     
-    topics = await get_all_topics()
+    db = await get_db()
+    if language_from:
+        async with db.execute('''
+            SELECT topics FROM cards 
+            WHERE topics IS NOT NULL AND topics != '' AND language_from = ?
+        ''', (language_from,)) as cursor:
+            rows = await cursor.fetchall()
+    else:
+        async with db.execute('''
+            SELECT topics FROM cards 
+            WHERE topics IS NOT NULL AND topics != ''
+        ''') as cursor:
+            rows = await cursor.fetchall()
+    
+    topics_set = set()
+    for row in rows:
+        if row[0]:
+            for t in row[0].split(','):
+                t = t.strip()
+                if t:
+                    topics_set.add(t)
+    
     result = []
-    for topic in topics:
-        count = await get_words_count_by_topic(topic)
+    for topic in sorted(topics_set):
+        count = await get_words_count_by_topic(topic, language_from)
         result.append((topic, count))
     
     def sort_key(item):
@@ -502,38 +541,46 @@ async def get_words_by_letter(language_from: str, letter: str, page: int = 0, pe
             })
         return cards, total
 
-async def get_words_by_category(category: str, page: int = 0, per_page: int = 5) -> Tuple[List[Dict], int]:
+async def get_words_by_category(category: str, page: int = 0, per_page: int = 5,
+                                language_from: Optional[str] = None) -> Tuple[List[Dict], int]:
     """
     Получить слова по тематике (категории) с пагинацией.
-    Показывает ВСЕ карточки категории, включая OBSCENUS_TYPE
-    (пользователь явно выбрал категорию).
+    Опциональный фильтр по языку. Показывает ВСЕ карточки категории,
+    включая OBSCENUS_TYPE (пользователь явно выбрал категорию).
     """
     db = await get_db()
     offset = page * per_page
     
-    async with db.execute('''
-        SELECT COUNT(*) FROM cards 
-        WHERE ',' || topics || ',' LIKE ?
-    ''', (f'%,{category},%',)) as cursor:
+    if language_from:
+        count_q = '''SELECT COUNT(*) FROM cards 
+                     WHERE ',' || topics || ',' LIKE ? AND language_from = ?'''
+        count_p = (f'%,{category},%', language_from)
+        data_q = '''SELECT card_id, word, translation, card_type, language_from 
+                    FROM cards 
+                    WHERE ',' || topics || ',' LIKE ? AND language_from = ?
+                    ORDER BY word ASC
+                    LIMIT ? OFFSET ?'''
+        data_p = (f'%,{category},%', language_from, per_page, offset)
+    else:
+        count_q = '''SELECT COUNT(*) FROM cards 
+                     WHERE ',' || topics || ',' LIKE ?'''
+        count_p = (f'%,{category},%',)
+        data_q = '''SELECT card_id, word, translation, card_type, language_from 
+                    FROM cards 
+                    WHERE ',' || topics || ',' LIKE ?
+                    ORDER BY word ASC
+                    LIMIT ? OFFSET ?'''
+        data_p = (f'%,{category},%', per_page, offset)
+    
+    async with db.execute(count_q, count_p) as cursor:
         total = (await cursor.fetchone())[0]
     
-    async with db.execute('''
-        SELECT card_id, word, translation, card_type, language_from 
-        FROM cards 
-        WHERE ',' || topics || ',' LIKE ?
-        ORDER BY word ASC
-        LIMIT ? OFFSET ?
-    ''', (f'%,{category},%', per_page, offset)) as cursor:
+    async with db.execute(data_q, data_p) as cursor:
         rows = await cursor.fetchall()
-        cards = []
-        for row in rows:
-            cards.append({
-                'card_id': row[0],
-                'word': row[1],
-                'translation': row[2],
-                'card_type': row[3],
-                'language_from': row[4]
-            })
+        cards = [{
+            'card_id': row[0], 'word': row[1], 'translation': row[2],
+            'card_type': row[3], 'language_from': row[4]
+        } for row in rows]
         return cards, total
 
 async def get_all_letters(language_from: str) -> List[str]:

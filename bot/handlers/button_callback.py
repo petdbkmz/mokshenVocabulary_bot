@@ -73,10 +73,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await dictionary_language(update, context)
         return
     
-    # === СЛОВАРЬ: категории (специфичные маршруты — ДО generic dict_letter_) ===
+   # === СЛОВАРЬ: категории ===
     if data == "dict_categories":
         from .dictionary import dictionary_categories
         await dictionary_categories(update, context)
+        return
+    
+    if data.startswith("dict_cat_lang_"):
+        from .dictionary import dict_categories_lang_select
+        await dict_categories_lang_select(update, context)
         return
     
     if data.startswith("dict_cat_list_"):
