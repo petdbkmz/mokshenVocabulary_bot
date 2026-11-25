@@ -35,6 +35,46 @@ async def dictionary_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================================
+# ВЫБОР ЯЗЫКА
+# ============================================
+
+async def dictionary_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор языка для словаря"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data.pop('dict_back_to', None)
+    
+    language_from = query.data.replace('dict_lang_', '')
+    context.user_data['dict_language'] = language_from
+    
+    reply_markup, language_name, letters_count = await get_letters_keyboard(language_from)
+    
+    await delete_previous(update)
+    
+    if letters_count == 0:
+        keyboard = [
+            [InlineKeyboardButton("📂 По категориям", callback_data="dict_categories")],
+            [InlineKeyboardButton("🔍 Найти слово", callback_data="dict_search")],
+            [InlineKeyboardButton("⬅️ Назад к выбору словаря", callback_data="dictionary_main")],
+            [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.reply_text(
+            f"📭 В словаре {language_name} пока нет слов.",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        return
+    
+    await query.message.reply_text(
+        f"📖 <b>{language_name}</b>\n\nВыбери первую букву слова:",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+# ============================================
 # СЛОВАРЬ ПО КАТЕГОРИЯМ
 # ============================================
 
